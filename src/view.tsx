@@ -27,6 +27,13 @@ function initialConfig(snapshot: EidosTableSnapshot): ChartConfig {
   }
 }
 
+/** Field types that can never hold numbers for Sum/Average/Min/Max. Formula and
+ * lookup are allowed: their result type is checked when the values are read. */
+const NON_NUMERIC_TYPES = new Set([
+  "text", "select", "multi-select", "checkbox", "date", "datetime", "url",
+  "file", "relation", "created-time", "last-edited-time", "row-id",
+])
+
 function useColorScheme(): boolean {
   const [isDark, setIsDark] = useState(() => {
     if (typeof document === "undefined") return false
@@ -136,13 +143,22 @@ function ChartView({
   // Fetch or aggregate data
   useEffect(() => {
     if (!snapshot) return
+    const fields = snapshot.fields
     let active = true
     setLoading(true)
     setError("")
 
     async function loadData() {
-      // 1. Try host-level table.aggregate
-      if (typeof table.aggregate === "function") {
+      // 1. Try host-level table.aggregate, except for temporal datetime
+      // grouping. Some host versions return unbucketed datetime values even
+      // when dateInterval is supplied, so use the deterministic local path.
+      const groupFieldForAggregation = fields.find(
+        (field) => field.id === config.group
+      )
+      const requiresDatetimeBucketing =
+        groupFieldForAggregation?.type === "datetime" && config.date !== "Exact"
+
+      if (!requiresDatetimeBucketing && typeof table.aggregate === "function") {
         try {
           const options = toTableAggregateOptions(config)
           const result = await table.aggregate(options)
@@ -176,7 +192,7 @@ function ChartView({
         if (active) {
           const result = aggregateRowsClientSide(
             allRows,
-            snapshot?.fields ?? [],
+            fields,
             config
           )
           setData(result)
@@ -206,7 +222,20 @@ function ChartView({
     [snapshot, config.value]
   )
 
+  // Settings that would produce a meaningless chart (e.g. averaging a select).
+  const configProblem = useMemo(() => {
+    if (
+      config.aggregate !== "Count" &&
+      valueField &&
+      NON_NUMERIC_TYPES.has(valueField.type)
+    ) {
+      return `"${valueField.name}" is a ${valueField.type} field. Value field must be numeric (number, rating or a numeric Formula) for ${config.aggregate}. Pick a numeric field or set Calculate to Count.`
+    }
+    return ""
+  }, [config, valueField])
+
   const isConfigured = useMemo(() => {
+    if (configProblem) return false
     if (config.type === "Number") {
       if (config.aggregate !== "Count" && !config.value) return false
       return true
@@ -214,7 +243,7 @@ function ChartView({
     if (!config.group) return false
     if (config.aggregate !== "Count" && !config.value) return false
     return true
-  }, [config])
+  }, [config, configProblem])
 
   const exportImage = async () => {
     if (exportBusy.current || !ui.exportFile) return
@@ -314,9 +343,13 @@ function ChartView({
               <path d="M12 16V7" />
               <path d="M17 16v-8" />
             </svg>
-            <div className="chart-empty-title">Configure Chart</div>
+            <div className="chart-empty-title">
+              {configProblem ? "Check Chart settings" : "Configure Chart"}
+            </div>
             <div className="chart-empty-hint">
-              {!config.group && config.type !== "Number"
+              {configProblem
+                ? configProblem
+                : !config.group && config.type !== "Number"
                 ? "Select a 'Group by' field in the View settings menu above."
                 : "Select a numeric 'Value field' in View settings to calculate."}
             </div>
