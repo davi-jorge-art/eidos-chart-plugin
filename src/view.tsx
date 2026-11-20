@@ -9,21 +9,27 @@ import { exportChartPng, type ChartHostUI } from "./export"
 import { aggregateRowsClientSide, toTableAggregateOptions } from "./aggregate"
 import { ChartCanvas } from "./charts/chart-canvas"
 import { NumberCard } from "./charts/number-card"
+import { CalendarView } from "./charts/calendar-view"
+import { buildCalendarModel } from "./calendar"
+import type { EidosFileRow } from "@eidos.space/eidos-file"
 import type { ChartConfig, ChartDataResult } from "./types"
 import "./style.css"
 
 function initialConfig(snapshot: EidosTableSnapshot): ChartConfig {
   const saved = snapshot.view.properties?.plugin as
-    | Partial<ChartConfig>
+    | (Partial<ChartConfig> & { timezone?: ChartConfig["calendarTz"] })
     | undefined
   return {
-    type: saved?.type ?? "Column",
+    // Views saved by 0.4.0 used the name "Calendar".
+    type: (saved?.type as string) === "Calendar" ? "Colored Calendar" : (saved?.type ?? "Column"),
     group: saved?.group ?? "",
     value: saved?.value ?? "",
     aggregate: saved?.aggregate ?? "Count",
     date: saved?.date ?? "Exact",
     sort: saved?.sort ?? "Label",
     legend: saved?.legend ?? true,
+    calendarTz: saved?.timezone ?? "Local",
+    color: saved?.color ?? "Blue",
   }
 }
 
@@ -33,6 +39,24 @@ const NON_NUMERIC_TYPES = new Set([
   "text", "select", "multi-select", "checkbox", "date", "datetime", "url",
   "file", "relation", "created-time", "last-edited-time", "row-id",
 ])
+const CALENDAR_DATE_TYPES = new Set([
+  "date", "datetime", "formula", "created-time", "last-edited-time",
+])
+
+const MAX_ROWS = 50000
+
+async function readAllRows(table: EidosTable): Promise<EidosFileRow[]> {
+  const allRows: EidosFileRow[] = []
+  let offset = 0
+  const limit = 1000
+  while (offset < MAX_ROWS) {
+    const page = await table.readRows({ offset, limit })
+    allRows.push(...page.rows)
+    if (page.rows.length < limit || allRows.length >= (page.total ?? 0)) break
+    offset += page.rows.length
+  }
+  return allRows
+}
 
 function useColorScheme(): boolean {
   const [isDark, setIsDark] = useState(() => {
@@ -104,7 +128,10 @@ function ChartView({
     date: "Exact",
     sort: "Label",
     legend: true,
+    calendarTz: "Local",
+    color: "Blue",
   })
+  const [calendarRows, setCalendarRows] = useState<EidosFileRow[]>([])
   const [data, setData] = useState<ChartDataResult>({
     items: [],
     totalRecords: 0,
@@ -149,6 +176,25 @@ function ChartView({
     setError("")
 
     async function loadData() {
+      // Calendar needs raw cell values (select, color text, numbers), so it
+      // always reads rows instead of using host aggregation.
+      if (config.type === "Colored Calendar") {
+        try {
+          const rows = await readAllRows(table)
+          if (active) {
+            setCalendarRows(rows)
+            setData({ items: [], totalRecords: rows.length })
+            setLoading(false)
+          }
+        } catch (err) {
+          if (active) {
+            setError(err instanceof Error ? err.message : String(err))
+            setLoading(false)
+          }
+        }
+        return
+      }
+
       // 1. Try host-level table.aggregate, except for temporal datetime
       // grouping. Some host versions return unbucketed datetime values even
       // when dateInterval is supplied, so use the deterministic local path.
@@ -175,19 +221,7 @@ function ChartView({
 
       // 2. Client-side fallback batch scan
       try {
-        const allRows: any[] = []
-        let offset = 0
-        const limit = 1000
-        const MAX_ROWS = 50000
-
-        while (offset < MAX_ROWS) {
-          const page = await table.readRows({ offset, limit })
-          allRows.push(...page.rows)
-          if (page.rows.length < limit || allRows.length >= (page.total ?? 0)) {
-            break
-          }
-          offset += page.rows.length
-        }
+        const allRows = await readAllRows(table)
 
         if (active) {
           const result = aggregateRowsClientSide(
@@ -222,6 +256,14 @@ function ChartView({
     [snapshot, config.value]
   )
 
+  const calendarModel = useMemo(
+    () =>
+      config.type === "Colored Calendar" && snapshot
+        ? buildCalendarModel(calendarRows, snapshot.fields, config, isDark)
+        : null,
+    [config, snapshot, calendarRows, isDark]
+  )
+
   // Settings that would produce a meaningless chart (e.g. averaging a select).
   const configProblem = useMemo(() => {
     if (
@@ -231,8 +273,15 @@ function ChartView({
     ) {
       return `"${valueField.name}" is a ${valueField.type} field. Value field must be numeric (number, rating or a numeric Formula) for ${config.aggregate}. Pick a numeric field or set Calculate to Count.`
     }
+    if (
+      config.type === "Colored Calendar" &&
+      groupField &&
+      !CALENDAR_DATE_TYPES.has(groupField.type)
+    ) {
+      return `Group by must be a date field for Colored Calendar, but "${groupField.name}" is a ${groupField.type} field.`
+    }
     return ""
-  }, [config, valueField])
+  }, [config, valueField, groupField])
 
   const isConfigured = useMemo(() => {
     if (configProblem) return false
@@ -280,7 +329,9 @@ function ChartView({
             <h1 className="chart-title">
               {config.type === "Number"
                 ? "Metric"
-                : `${groupField?.name ?? "Items"} by ${config.aggregate}`}
+                : config.type === "Colored Calendar"
+                  ? `${groupField?.name ?? "Calendar"} calendar`
+                  : `${groupField?.name ?? "Items"} by ${config.aggregate}`}
             </h1>
             <span className="chart-record-count">
               · {data.totalRecords.toLocaleString()}{" "}
@@ -289,6 +340,7 @@ function ChartView({
           </div>
           <div className="chart-actions">
             {config.type !== "Number" &&
+              config.type !== "Colored Calendar" &&
               isConfigured &&
               data.items.length > 0 && (
                 <button
@@ -316,10 +368,16 @@ function ChartView({
       )}
       <div role="status" aria-live="polite" className="chart-export-status">
         {exportStatus ||
-          (!ui.exportFile && config.type !== "Number"
+          (!ui.exportFile && config.type !== "Number" && config.type !== "Colored Calendar"
             ? "PNG export requires an Eidos host with file export support."
             : "")}
       </div>
+
+      {!error && calendarModel?.error && (
+        <div className="chart-error" role="alert">
+          <span>{calendarModel.error}</span>
+        </div>
+      )}
 
       {error && (
         <div className="chart-error" role="alert">
@@ -349,6 +407,8 @@ function ChartView({
             <div className="chart-empty-hint">
               {configProblem
                 ? configProblem
+                : config.type === "Colored Calendar" && !config.group
+                ? "Select a date field in 'Group by'. Days are colored by the Calculate result (Count, or a numeric Value field)."
                 : !config.group && config.type !== "Number"
                 ? "Select a 'Group by' field in the View settings menu above."
                 : "Select a numeric 'Value field' in View settings to calculate."}
@@ -363,6 +423,18 @@ function ChartView({
               There are no matching records for the current filters.
             </div>
           </div>
+        ) : config.type === "Colored Calendar" && calendarModel ? (
+          <CalendarView
+            model={calendarModel}
+            legendLabel={
+              config.aggregate === "Count" || !valueField
+                ? "Count"
+                : `${config.aggregate} of ${valueField.name}`
+            }
+            onOpenRecord={(rowId) => {
+              void table.openRecord(rowId).catch(() => undefined)
+            }}
+          />
         ) : config.type === "Number" ? (
           <NumberCard
             item={data.items[0]}
