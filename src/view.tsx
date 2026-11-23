@@ -1,38 +1,14 @@
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { createRoot } from "react-dom/client"
-import type {
-  Mount,
-  EidosTable,
-  EidosTableSnapshot,
-} from "@eidos.space/plugin-sdk"
+import type { Mount, EidosTable } from "@eidos.space/plugin-sdk"
 import { exportChartPng, type ChartHostUI } from "./export"
-import { aggregateRowsClientSide, toTableAggregateOptions } from "./aggregate"
+import { loadChartData, readChartSettings } from "./data"
 import { ChartCanvas } from "./charts/chart-canvas"
 import { NumberCard } from "./charts/number-card"
-import type { ChartConfig, ChartDataResult } from "./types"
+import type { ChartDataResult } from "./types"
 import "./style.css"
 
-function initialConfig(snapshot: EidosTableSnapshot): ChartConfig {
-  const saved = snapshot.view.properties?.plugin as
-    | Partial<ChartConfig>
-    | undefined
-  return {
-    type: saved?.type ?? "Column",
-    group: saved?.group ?? "",
-    value: saved?.value ?? "",
-    aggregate: saved?.aggregate ?? "Count",
-    date: saved?.date ?? "Exact",
-    sort: saved?.sort ?? "Label",
-    legend: saved?.legend ?? true,
-  }
-}
-
-/** Field types that can never hold numbers for Sum/Average/Min/Max. Formula and
- * lookup are allowed: their result type is checked when the values are read. */
-const NON_NUMERIC_TYPES = new Set([
-  "text", "select", "multi-select", "checkbox", "date", "datetime", "url",
-  "file", "relation", "created-time", "last-edited-time", "row-id",
-])
+const EMPTY_CHART: ChartDataResult = { items: [], totalRecords: 0 }
 
 function useColorScheme(): boolean {
   const [isDark, setIsDark] = useState(() => {
@@ -95,20 +71,9 @@ function ChartView({
     }
   }, [])
   const isDark = useColorScheme()
-  const [snapshot, setSnapshot] = useState<EidosTableSnapshot | null>(null)
-  const [config, setConfig] = useState<ChartConfig>({
-    type: "Column",
-    group: "",
-    value: "",
-    aggregate: "Count",
-    date: "Exact",
-    sort: "Label",
-    legend: true,
-  })
-  const [data, setData] = useState<ChartDataResult>({
-    items: [],
-    totalRecords: 0,
-  })
+  const [settings, setSettings] = useState(() => readChartSettings())
+  const { config, groupField, valueField, configProblem, isConfigured } = settings
+  const [data, setData] = useState(EMPTY_CHART)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState("")
   const [revision, setRevision] = useState(0)
@@ -119,134 +84,38 @@ function ChartView({
     return () => observation.dispose()
   }, [table])
 
-  // Read snapshot & config
   useEffect(() => {
-    let active = true
-    void table
-      .readContext()
-      .then((val) => {
-        if (active) {
-          setSnapshot(val)
-          setConfig(initialConfig(val))
-        }
-      })
-      .catch((err) => {
-        if (active) {
-          setError(err instanceof Error ? err.message : String(err))
-        }
-      })
-    return () => {
-      active = false
-    }
-  }, [table, revision])
-
-  // Fetch or aggregate data
-  useEffect(() => {
-    if (!snapshot) return
-    const fields = snapshot.fields
-    let active = true
+    const controller = new AbortController()
+    const { signal } = controller
     setLoading(true)
     setError("")
 
     async function loadData() {
-      // 1. Try host-level table.aggregate, except for temporal datetime
-      // grouping. Some host versions return unbucketed datetime values even
-      // when dateInterval is supplied, so use the deterministic local path.
-      const groupFieldForAggregation = fields.find(
-        (field) => field.id === config.group
-      )
-      const requiresDatetimeBucketing =
-        groupFieldForAggregation?.type === "datetime" && config.date !== "Exact"
-
-      if (!requiresDatetimeBucketing && typeof table.aggregate === "function") {
-        try {
-          const options = toTableAggregateOptions(config)
-          const result = await table.aggregate(options)
-          if (active) {
-            setData(result)
-            setLoading(false)
-          }
-          return
-        } catch (cause) {
-          // If unsupported, fall through to client-side batch fetch
-          console.warn("Host table.aggregate unavailable, falling back:", cause)
-        }
-      }
-
-      // 2. Client-side fallback batch scan
       try {
-        const allRows: any[] = []
-        let offset = 0
-        const limit = 1000
-        const MAX_ROWS = 50000
-
-        while (offset < MAX_ROWS) {
-          const page = await table.readRows({ offset, limit })
-          allRows.push(...page.rows)
-          if (page.rows.length < limit || allRows.length >= (page.total ?? 0)) {
-            break
-          }
-          offset += page.rows.length
-        }
-
-        if (active) {
-          const result = aggregateRowsClientSide(
-            allRows,
-            fields,
-            config
-          )
-          setData(result)
-          setLoading(false)
-        }
+        const snapshot = await table.readContext()
+        if (signal.aborted) return
+        const next = readChartSettings(snapshot)
+        setSettings(next)
+        const result = next.isConfigured
+          ? await loadChartData(table, next, signal)
+          : EMPTY_CHART
+        if (!signal.aborted) setData(result)
       } catch (err) {
-        if (active) {
+        if (!signal.aborted) {
+          setData(EMPTY_CHART)
           setError(err instanceof Error ? err.message : String(err))
-          setLoading(false)
         }
+      } finally {
+        if (!signal.aborted) setLoading(false)
       }
     }
 
     void loadData()
-
-    return () => {
-      active = false
-    }
-  }, [table, snapshot, config, revision])
-
-  const groupField = useMemo(
-    () => snapshot?.fields.find((f) => f.id === config.group),
-    [snapshot, config.group]
-  )
-  const valueField = useMemo(
-    () => snapshot?.fields.find((f) => f.id === config.value),
-    [snapshot, config.value]
-  )
-
-  // Settings that would produce a meaningless chart (e.g. averaging a select).
-  const configProblem = useMemo(() => {
-    if (
-      config.aggregate !== "Count" &&
-      valueField &&
-      NON_NUMERIC_TYPES.has(valueField.type)
-    ) {
-      return `"${valueField.name}" is a ${valueField.type} field. Value field must be numeric (number, rating or a numeric Formula) for ${config.aggregate}. Pick a numeric field or set Calculate to Count.`
-    }
-    return ""
-  }, [config, valueField])
-
-  const isConfigured = useMemo(() => {
-    if (configProblem) return false
-    if (config.type === "Number") {
-      if (config.aggregate !== "Count" && !config.value) return false
-      return true
-    }
-    if (!config.group) return false
-    if (config.aggregate !== "Count" && !config.value) return false
-    return true
-  }, [config, configProblem])
+    return () => controller.abort()
+  }, [table, revision])
 
   const exportImage = async () => {
-    if (exportBusy.current || !ui.exportFile) return
+    if (exportBusy.current || loading || error || !ui.exportFile) return
     exportBusy.current = true
     setExporting(true)
     setExportStatus("")
@@ -282,14 +151,17 @@ function ChartView({
                 ? "Metric"
                 : `${groupField?.name ?? "Items"} by ${config.aggregate}`}
             </h1>
-            <span className="chart-record-count">
-              · {data.totalRecords.toLocaleString()}{" "}
-              {data.totalRecords === 1 ? "record" : "records"}
-            </span>
+            {isConfigured && !error && (
+              <span className="chart-record-count">
+                · {data.totalRecords.toLocaleString()}{" "}
+                {data.totalRecords === 1 ? "record" : "records"}
+              </span>
+            )}
           </div>
           <div className="chart-actions">
             {config.type !== "Number" &&
               isConfigured &&
+              !error &&
               data.items.length > 0 && (
                 <button
                   className="chart-btn"
@@ -329,7 +201,7 @@ function ChartView({
       )}
 
       <div className="chart-content">
-        {!isConfigured ? (
+        {error ? null : !isConfigured ? (
           <div className="chart-empty">
             <svg
               className="chart-empty-icon"
@@ -349,7 +221,7 @@ function ChartView({
             <div className="chart-empty-hint">
               {configProblem
                 ? configProblem
-                : !config.group && config.type !== "Number"
+                : !groupField && config.type !== "Number"
                 ? "Select a 'Group by' field in the View settings menu above."
                 : "Select a numeric 'Value field' in View settings to calculate."}
             </div>

@@ -7,7 +7,7 @@ Version 0.3.3 requires plugin API 3.0.0, supported by Eidos Lite 0.20.0 and Eido
 ## Features
 
 - **Multiple Chart Types**: Column, Bar, Line, Donut, and Big Number metrics.
-- **SQLite-Accelerated Grouping & Aggregation**: Fast aggregations (Count, Sum, Average, Min, Max) calculated directly over table data.
+- **Grouping & Aggregation**: Count, Sum, Average, Min, and Max over all matching records. Chart uses host aggregation where available and reads matching rows in batches when the host cannot provide the requested grouping.
 - **Temporal Grouping**: Group by Day, Month, or Year.
 - **Offline & Self-Contained**: Powered by Chart.js in a secure, sandboxed iframe.
 - **PNG Export**: Uses the host's file export capability: a native save dialog in Lite,

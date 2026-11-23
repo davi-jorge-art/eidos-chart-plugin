@@ -1,8 +1,9 @@
 # Chart 0.3.3
 
-- Fix daily/monthly/yearly grouping of `datetime` fields (for example a daily average of a Mood score). Timestamps are normalized to UTC before bucketing, strings without a timezone are read as UTC, and grouped `datetime` charts no longer trust host aggregation that returns one point per record.
-- Fix Sum/Average/Min/Max over Formula fields showing 0 when the host returns values as `bigint` or numeric text. If no numeric value can be read, the chart now reports an error naming the field instead of plotting 0.
-- Show a clear message when a non-numeric Value field (select, text, date...) is combined with Sum/Average/Min/Max, instead of a flat line at 0.
+- Group all matching `datetime` records by UTC day, month, or year. Timestamps without a timezone are read as UTC.
+- Count every matching record at any time interval, including records with an empty Value field.
+- Calculate Sum, Average, Min, and Max over numeric Formula results, including values returned as `bigint` or numeric text. Chart checks the result type of Formula and Lookup fields and shows a settings message for non-numeric fields.
+- Clear chart data and hide PNG export when loading fails. Retry reloads the chart with the current settings.
 
 # Chart 0.3.0
 
