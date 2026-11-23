@@ -196,4 +196,46 @@ describe("colored calendar", () => {
     expect(contrastText("#ffffff")).toBe("#1f1f1e")
     expect(contrastText("#000000")).toBe("#ffffff")
   })
+
+  it("uses a fixed scale instead of the lowest/highest day shown", () => {
+    const rows = rowsOf([
+      { dt: "2026-11-20T10:00:00Z", n: 2 },
+      { dt: "2026-11-20T11:00:00Z", n: 2 },
+      { dt: "2026-11-20T12:00:00Z", n: -2 },
+      { dt: "2026-11-22T10:00:00Z", n: -1 },
+      { dt: "2026-11-22T11:00:00Z", n: -2 },
+    ])
+    const auto = buildCalendarModel(rows, [dateField, numField], cfg("Average"))
+    expect(auto.range).toEqual({ min: -1.5, max: 2 / 3 })
+    const fixed = buildCalendarModel(rows, [dateField, numField], {
+      ...cfg("Average"),
+      scaleMin: -2,
+      scaleMax: 2,
+    })
+    expect(fixed.range).toEqual({ min: -2, max: 2 })
+    // The best day of the month is not the darkest color unless it is +2.
+    const color = (v: number) =>
+      scaleColor(v, -2, 2, CALENDAR_COLORS.Blue, false)
+    expect(color(2 / 3)).not.toBe(color(2))
+    expect(color(2)).toBe(CALENDAR_COLORS.Blue)
+  })
+
+  it("clamps values outside the fixed scale and ignores inverted bounds", () => {
+    expect(scaleColor(5, -2, 2, CALENDAR_COLORS.Blue, false)).toBe(
+      scaleColor(2, -2, 2, CALENDAR_COLORS.Blue, false)
+    )
+    expect(scaleColor(-9, -2, 2, CALENDAR_COLORS.Blue, false)).toBe(
+      scaleColor(-2, -2, 2, CALENDAR_COLORS.Blue, false)
+    )
+    const rows = rowsOf([
+      { dt: "2026-11-20T10:00:00Z", n: 1 },
+      { dt: "2026-11-21T10:00:00Z", n: 3 },
+    ])
+    const model = buildCalendarModel(rows, [dateField, numField], {
+      ...cfg("Average"),
+      scaleMin: 5,
+      scaleMax: -5,
+    })
+    expect(model.range).toEqual({ min: 1, max: 3 })
+  })
 })

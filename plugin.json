@@ -121,6 +121,18 @@
               "Gray"
             ],
             "description": "Base color of the Calendar Heatmap scale."
+          },
+          "scale-min": {
+            "type": "string",
+            "title": "Scale minimum",
+            "default": "",
+            "description": "Calendar Heatmap: value shown with the lightest color (for example -2). Leave empty to use the lowest day shown."
+          },
+          "scale-max": {
+            "type": "string",
+            "title": "Scale maximum",
+            "default": "",
+            "description": "Calendar Heatmap: value shown with the darkest color (for example 2). Leave empty to use the highest day shown."
           }
         }
       },

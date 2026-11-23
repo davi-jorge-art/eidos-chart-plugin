@@ -41,6 +41,24 @@ function settings(
   return readChartSettings({ fields, view })
 }
 
+describe("Calendar Heatmap scale settings", () => {
+  it("reads scale bounds from text settings; empty or invalid means automatic", () => {
+    const read = (min: unknown, max: unknown) =>
+      settings({
+        type: "Calendar Heatmap",
+        ["scale-min" as never]: min as never,
+        ["scale-max" as never]: max as never,
+      }).config
+    expect(read("-2", "2")).toMatchObject({ scaleMin: -2, scaleMax: 2 })
+    expect(read(" -1,5 ", "0.5")).toMatchObject({ scaleMin: -1.5, scaleMax: 0.5 })
+    expect(read("", "abc")).toMatchObject({
+      scaleMin: undefined,
+      scaleMax: undefined,
+    })
+    expect(read(undefined, undefined)).toMatchObject({ scaleMin: undefined })
+  })
+})
+
 function mockTable(
   page: (
     offset: number,

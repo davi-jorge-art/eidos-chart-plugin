@@ -77,7 +77,8 @@ export function scaleColor(
   baseColor: string,
   isDark: boolean
 ): string {
-  const t = max === min ? 0.7 : 0.15 + 0.85 * ((value - min) / (max - min))
+  const clamped = Math.min(max, Math.max(min, value))
+  const t = max === min ? 0.7 : 0.15 + 0.85 * ((clamped - min) / (max - min))
   return mix(neutralRgb(isDark), hexToRgb(baseColor), t)
 }
 
@@ -120,7 +121,7 @@ export function dayKeyOf(
 
 type CalendarConfig = Pick<
   ChartConfig,
-  "group" | "value" | "aggregate" | "calendarTz"
+  "group" | "value" | "aggregate" | "calendarTz" | "scaleMin" | "scaleMax"
 >
 
 interface RecordOrder {
@@ -198,9 +199,17 @@ export function createCalendarAggregator(
       min = Math.min(min, value)
       max = Math.max(max, value)
     }
+    // A fixed scale (e.g. -2..2 for a mood score) makes colors comparable
+    // across months; otherwise the lowest/highest day shown sets the ends.
+    let rangeMin = config.scaleMin ?? min
+    let rangeMax = config.scaleMax ?? max
+    if (rangeMin > rangeMax) {
+      rangeMin = min
+      rangeMax = max
+    }
     return {
       days,
-      range: days.size ? { min, max } : undefined,
+      range: days.size ? { min: rangeMin, max: rangeMax } : undefined,
       totalRecords,
       skipped,
     }

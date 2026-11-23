@@ -27,11 +27,21 @@ const DATE_TYPES = new Set<unknown>([
 ])
 const NUMERIC_TYPES = new Set<unknown>(["number", "integer", "rating"])
 
+/** Scale bounds are text settings so they can be left empty (= automatic). */
+function parseScaleBound(raw: unknown): number | undefined {
+  if (typeof raw === "number") return Number.isFinite(raw) ? raw : undefined
+  if (typeof raw !== "string" || !raw.trim()) return undefined
+  const value = Number(raw.trim().replace(",", "."))
+  return Number.isFinite(value) ? value : undefined
+}
+
 export function readChartSettings(snapshot?: EidosTableSnapshot) {
   const saved = snapshot?.view.properties?.plugin as
     | (Omit<Partial<ChartConfig>, "type"> & {
         type?: ChartConfig["type"] | "Calendar" | "Colored Calendar"
         timezone?: ChartConfig["calendarTz"]
+        "scale-min"?: unknown
+        "scale-max"?: unknown
       })
     | undefined
   const type = saved?.type
@@ -48,6 +58,8 @@ export function readChartSettings(snapshot?: EidosTableSnapshot) {
     legend: saved?.legend ?? true,
     calendarTz: saved?.timezone ?? "Local",
     color: saved?.color ?? "Blue",
+    scaleMin: parseScaleBound(saved?.["scale-min"]),
+    scaleMax: parseScaleBound(saved?.["scale-max"]),
   }
   const fields = snapshot?.fields ?? []
   const groupField = fields.find((field) => field.id === config.group)
