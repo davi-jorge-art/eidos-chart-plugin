@@ -90,7 +90,8 @@ export function toTableAggregateOptions(
         }
       : undefined,
     metric: {
-      fieldId: config.value || undefined,
+      fieldId:
+        config.aggregate === "Count" ? undefined : config.value || undefined,
       op: opMap[config.aggregate] ?? "count",
     },
     sort: sortMap[config.sort] ?? "label",
@@ -214,6 +215,15 @@ export function aggregateRowsClientSide(
   fields: EidosFileFieldInfo[],
   config: ChartConfig
 ): ChartDataResult {
+  const aggregator = createRowAggregator(fields, config)
+  aggregator.addRows(rows)
+  return aggregator.finish()
+}
+
+export function createRowAggregator(
+  fields: EidosFileFieldInfo[],
+  config: ChartConfig
+) {
   const groupField = fields.find((f) => f.id === config.group)
   const valueField = fields.find((f) => f.id === config.value)
 
@@ -234,10 +244,15 @@ export function aggregateRowsClientSide(
   }
 
   const needsValues = config.aggregate !== "Count"
-  const probe = { rows: 0, keyed: false, raw: false, numeric: false, sample: undefined as unknown }
+  const probe = {
+    keyed: false,
+    raw: false,
+    numeric: false,
+    sample: undefined as unknown,
+  }
+  let totalRecords = 0
   const readValue = (row: EidosFileRow): number | undefined => {
     const raw = readCell(row, valueField, valueCol)
-    probe.rows++
     if (raw !== undefined) probe.keyed = true
     if (raw !== undefined && raw !== null && raw !== "") {
       probe.raw = true
@@ -247,152 +262,130 @@ export function aggregateRowsClientSide(
     if (n !== undefined) probe.numeric = true
     return n
   }
-  // Never turn "values could not be read" into a silent 0.
-  const assertValuesReadable = () => {
-    if (!needsValues || !valueField || probe.rows === 0 || probe.numeric) return
-    if (!probe.keyed || probe.raw) {
-      throw new Error(unreadableValuesMessage(valueField, probe))
-    }
-  }
-
-  // Single metric across all rows
-  if (!groupField) {
-    let result = 0
-    if (config.aggregate === "Count") {
-      result = rows.length
-    } else {
-      const numbers: number[] = []
-      for (const row of rows) {
-        const n = readValue(row)
-        if (n !== undefined) numbers.push(n)
-      }
-      assertValuesReadable()
-      if (config.aggregate === "Sum") {
-        result = numbers.reduce((a, b) => a + b, 0)
-      } else if (config.aggregate === "Average") {
-        result = numbers.length
-          ? numbers.reduce((a, b) => a + b, 0) / numbers.length
-          : 0
-      } else if (config.aggregate === "Minimum") {
-        result = numbers.length ? Math.min(...numbers) : 0
-      } else if (config.aggregate === "Maximum") {
-        result = numbers.length ? Math.max(...numbers) : 0
-      }
-    }
+  function newBucket(key: unknown, label: string) {
     return {
-      items: [{ key: null, label: "Total", value: result }],
-      totalRecords: rows.length,
+      key,
+      label,
+      count: 0,
+      numericCount: 0,
+      sum: 0,
+      min: Infinity,
+      max: -Infinity,
     }
   }
-
-  // Grouped aggregation
-  type GroupAccumulator = {
-    key: unknown
-    label: string
-    values: number[]
-    count: number
-  }
-  const groups = new Map<string, GroupAccumulator>()
+  const groups = new Map<string, ReturnType<typeof newBucket>>()
+  const total = newBucket(null, "Total")
 
   const isList =
-    groupField.storageCodec === "json_array" ||
-    groupField.storageCodec === "relation"
+    groupField?.storageCodec === "json_array" ||
+    groupField?.storageCodec === "relation"
 
-  for (const row of rows) {
-    const rawGroupVal = readCell(row, groupField, groupCol)
-    const numeric = needsValues ? readValue(row) : undefined
+  function addValue(
+    bucket: ReturnType<typeof newBucket>,
+    value: number | undefined
+  ) {
+    bucket.count++
+    if (value === undefined) return
+    bucket.numericCount++
+    bucket.sum += value
+    bucket.min = Math.min(bucket.min, value)
+    bucket.max = Math.max(bucket.max, value)
+  }
 
-    let keys: unknown[] = []
-    if (isList) {
-      if (Array.isArray(rawGroupVal)) {
-        keys = rawGroupVal
-      } else if (typeof rawGroupVal === "string" && rawGroupVal.startsWith("[")) {
-        try {
-          keys = JSON.parse(rawGroupVal)
-        } catch {
-          keys = [rawGroupVal]
+  function addRows(rows: EidosFileRow[]) {
+    totalRecords += rows.length
+    for (const row of rows) {
+      const numeric = needsValues ? readValue(row) : undefined
+      if (!groupField) {
+        addValue(total, numeric)
+        continue
+      }
+
+      const rawGroupVal = readCell(row, groupField, groupCol)
+      for (const key of isList ? listKeys(rawGroupVal) : [rawGroupVal]) {
+        const bucketKey =
+          (groupField.type === "date" && typeof key === "string") ||
+          (groupField.type === "datetime" &&
+            (typeof key === "string" || typeof key === "number"))
+            ? formatDateKey(key, config.date)
+            : key
+        const stringKey = bucketKey == null ? "__null__" : String(bucketKey)
+
+        let bucket = groups.get(stringKey)
+        if (!bucket) {
+          let label = String(bucketKey)
+          if (bucketKey == null || bucketKey === "") {
+            label = "(Empty)"
+          } else if (groupField.type === "checkbox") {
+            label = bucketKey === 1 || bucketKey === true ? "Checked" : "Unchecked"
+          } else if (typeof bucketKey === "string") {
+            label = optionsMap.get(bucketKey) ?? label
+          }
+          bucket = newBucket(bucketKey, label)
+          groups.set(stringKey, bucket)
         }
-      } else if (rawGroupVal !== null && rawGroupVal !== undefined) {
-        keys = [rawGroupVal]
+        addValue(bucket, numeric)
       }
-      if (keys.length === 0) {
-        keys = [null]
+    }
+  }
+
+  function finish(): ChartDataResult {
+    if (
+      needsValues &&
+      valueField &&
+      totalRecords > 0 &&
+      !probe.numeric &&
+      (!probe.keyed || probe.raw)
+    ) {
+      throw new Error(unreadableValuesMessage(valueField, probe))
+    }
+
+    const items: ChartDataItem[] = []
+    for (const bucket of groupField ? groups.values() : [total]) {
+      let value = 0
+      switch (config.aggregate) {
+        case "Count":
+          value = bucket.count
+          break
+        case "Sum":
+          value = bucket.sum
+          break
+        case "Average":
+          value = bucket.numericCount ? bucket.sum / bucket.numericCount : 0
+          break
+        case "Minimum":
+          value = bucket.numericCount ? bucket.min : 0
+          break
+        case "Maximum":
+          value = bucket.numericCount ? bucket.max : 0
+          break
       }
+      items.push({ key: bucket.key, label: bucket.label, value })
+    }
+
+    if (config.sort === "Value descending") {
+      items.sort((a, b) => b.value - a.value || a.label.localeCompare(b.label))
+    } else if (config.sort === "Value ascending") {
+      items.sort((a, b) => a.value - b.value || a.label.localeCompare(b.label))
     } else {
-      keys = [rawGroupVal]
+      items.sort((a, b) => a.label.localeCompare(b.label))
     }
+    return { items, totalRecords }
+  }
 
-    for (const k of keys) {
-      let bucketKey = k
-      if (
-        (typeof k === "string" ||
-          (typeof k === "number" && groupField.type === "datetime")) &&
-        (groupField.type === "date" || groupField.type === "datetime")
-      ) {
-        bucketKey = formatDateKey(k, config.date)
-      }
-      const stringKey =
-        bucketKey === null || bucketKey === undefined ? "__null__" : String(bucketKey)
+  return { addRows, finish }
+}
 
-      let accum = groups.get(stringKey)
-      if (!accum) {
-        let label = ""
-        if (bucketKey === null || bucketKey === undefined || bucketKey === "") {
-          label = "(Empty)"
-        } else if (groupField.type === "checkbox") {
-          label = bucketKey === 1 || bucketKey === true ? "Checked" : "Unchecked"
-        } else if (typeof bucketKey === "string" && optionsMap.has(bucketKey)) {
-          label = optionsMap.get(bucketKey)!
-        } else {
-          label = String(bucketKey)
-        }
-        accum = { key: bucketKey, label, values: [], count: 0 }
-        groups.set(stringKey, accum)
-      }
-
-      accum.count++
-      if (numeric !== undefined) {
-        accum.values.push(numeric)
-      }
+function listKeys(value: unknown): unknown[] {
+  if (value == null) return [null]
+  if (Array.isArray(value)) return value.length ? value : [null]
+  if (typeof value === "string" && value.startsWith("[")) {
+    try {
+      const entries: unknown[] = JSON.parse(value)
+      return entries.length ? entries : [null]
+    } catch {
+      return [value]
     }
   }
-
-  assertValuesReadable()
-
-  const items: ChartDataItem[] = []
-  for (const group of groups.values()) {
-    let value = 0
-    if (config.aggregate === "Count") {
-      value = group.count
-    } else if (config.aggregate === "Sum") {
-      value = group.values.reduce((a, b) => a + b, 0)
-    } else if (config.aggregate === "Average") {
-      value = group.values.length
-        ? group.values.reduce((a, b) => a + b, 0) / group.values.length
-        : 0
-    } else if (config.aggregate === "Minimum") {
-      value = group.values.length ? Math.min(...group.values) : 0
-    } else if (config.aggregate === "Maximum") {
-      value = group.values.length ? Math.max(...group.values) : 0
-    }
-    items.push({
-      key: group.key,
-      label: group.label,
-      value,
-    })
-  }
-
-  // Sort
-  if (config.sort === "Value descending") {
-    items.sort((a, b) => b.value - a.value || a.label.localeCompare(b.label))
-  } else if (config.sort === "Value ascending") {
-    items.sort((a, b) => a.value - b.value || a.label.localeCompare(b.label))
-  } else {
-    items.sort((a, b) => a.label.localeCompare(b.label))
-  }
-
-  return {
-    items,
-    totalRecords: rows.length,
-  }
+  return [value]
 }
