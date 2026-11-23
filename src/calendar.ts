@@ -118,6 +118,35 @@ export function dayKeyOf(
   return dayPlacement(raw, timezone)?.key ?? null
 }
 
+/**
+ * Smallest and largest value a Formula can return, when its result is a CASE
+ * whose THEN/ELSE branches are all numeric literals (or NULL), e.g. a mood
+ * mapping `CASE WHEN ... THEN -2 ... THEN 2 ELSE NULL END`. Anything else is
+ * unknown (undefined), because the result depends on the data.
+ */
+export function formulaValueRange(
+  field: EidosFileFieldInfo | undefined
+): { min: number; max: number } | undefined {
+  const raw = field?.settings?.formula ?? field?.property?.formula
+  if (field?.type !== "formula" || typeof raw !== "string") return undefined
+  const text = raw.replace(/'[^']*'/g, "''") // ignore text literals
+  if (!/\bcase\b/i.test(text) || (text.match(/\bcase\b/gi) ?? []).length > 1) {
+    return undefined
+  }
+  const results = [
+    ...text.matchAll(/\b(?:then|else)\s+(.+?)(?=\s+(?:when|else|end)\b|\s*$)/gis),
+  ].map((m) => m[1]!.trim())
+  const numbers: number[] = []
+  for (const result of results) {
+    if (/^null$/i.test(result)) continue
+    if (!/^[-+]?\d+(?:\.\d+)?$/.test(result)) return undefined
+    numbers.push(Number(result))
+  }
+  return numbers.length
+    ? { min: Math.min(...numbers), max: Math.max(...numbers) }
+    : undefined
+}
+
 type CalendarConfig = Pick<
   ChartConfig,
   "group" | "value" | "aggregate" | "calendarTz"
@@ -159,6 +188,9 @@ export function createCalendarAggregator(
   >()
   let skipped = 0
   let totalRecords = 0
+  // Lowest/highest individual value over every record read (all months).
+  let recordedMin = Infinity
+  let recordedMax = -Infinity
 
   function addRows(rows: EidosFileRow[]) {
     totalRecords += rows.length
@@ -173,7 +205,12 @@ export function createCalendarAggregator(
       }
       const { key, timestamp } = placement
       const bucket = buckets.get(key) ?? { metric: new MetricAccumulator() }
-      bucket.metric.add(useValues ? values.read(row) : undefined)
+      const numeric = useValues ? values.read(row) : undefined
+      bucket.metric.add(numeric)
+      if (numeric !== undefined) {
+        recordedMin = Math.min(recordedMin, numeric)
+        recordedMax = Math.max(recordedMax, numeric)
+      }
       const rowId = row._id ?? readCell(row, idField, "_id")
       if (typeof rowId === "string" && rowId) {
         const creation = readCell(row, createdField, "_created_at")
@@ -198,9 +235,27 @@ export function createCalendarAggregator(
       min = Math.min(min, value)
       max = Math.max(max, value)
     }
+    // An average, minimum or maximum always lies between the lowest and the
+    // highest value the field can take, so the scale spans that whole range:
+    // a day is not the darkest just because it is the best one so far. The
+    // range comes from a literal Formula when possible, widened by every
+    // recorded value. Sum and Count have no such bound, so they use the days.
+    let range = days.size ? { min, max } : undefined
+    if (
+      range &&
+      useValues &&
+      config.aggregate !== "Sum" &&
+      recordedMin <= recordedMax
+    ) {
+      const possible = formulaValueRange(valueField)
+      range = {
+        min: Math.min(possible?.min ?? Infinity, recordedMin),
+        max: Math.max(possible?.max ?? -Infinity, recordedMax),
+      }
+    }
     return {
       days,
-      range: days.size ? { min, max } : undefined,
+      range,
       totalRecords,
       skipped,
     }

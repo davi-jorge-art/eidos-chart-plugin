@@ -41,7 +41,8 @@ describe("colored calendar", () => {
       { _id: "d", dt: "2026-11-16T18:00:00.000Z", n: -1 },
     ])
     const m = buildCalendarModel(rows, [dateField, numField], cfg("Average"))
-    expect(m.range).toEqual({ min: 0, max: 2 })
+    // The scale spans the recorded values (-1..2), not just the daily averages.
+    expect(m.range).toEqual({ min: -1, max: 2 })
     expect(m.days.get("2026-11-17")).toMatchObject({
       value: 2,
       count: 2,
@@ -195,5 +196,86 @@ describe("colored calendar", () => {
     expect(contrastText(CALENDAR_COLORS.Blue)).toBe("#1f1f1e")
     expect(contrastText("#ffffff")).toBe("#1f1f1e")
     expect(contrastText("#000000")).toBe("#ffffff")
+  })
+
+  describe("scale range", () => {
+    const moodFormula = `CASE
+      WHEN "Mood" = 'Awful' THEN -2
+      WHEN "Mood" = 'Bad' THEN -1
+      WHEN "Mood" = 'Okay' THEN 0
+      WHEN "Mood" = 'Good' THEN 1
+      WHEN "Mood" = 'Great' THEN 2
+      ELSE NULL
+    END`
+    const mood = (formula?: string) =>
+      f({
+        id: "f_n",
+        name: "Mood Number Values",
+        type: "formula",
+        tableColumnName: "n",
+        settings: formula === undefined ? undefined : { formula },
+      })
+
+    it("reads the possible range from a literal CASE formula", () => {
+      // Only 0 and 1 were ever recorded, but the field can go from -2 to 2.
+      const rows = rowsOf([
+        { dt: "2026-11-16T10:00:00Z", n: 1 },
+        { dt: "2026-11-17T10:00:00Z", n: 0 },
+      ])
+      const m = buildCalendarModel(rows, [dateField, mood(moodFormula)], cfg("Average"))
+      expect(m.range).toEqual({ min: -2, max: 2 })
+      expect(m.days.get("2026-11-16")?.value).toBe(1)
+      // The best day is NOT the darkest color.
+      const blue = CALENDAR_COLORS.Blue
+      expect(scaleColor(1, -2, 2, blue, false)).not.toBe(blue)
+    })
+
+    it("uses every recorded value when the formula range is unknown", () => {
+      const rows = rowsOf([
+        { dt: "2026-11-15T10:00:00Z", n: -2 },
+        { dt: "2026-11-15T11:00:00Z", n: 2 },
+        { dt: "2026-11-16T10:00:00Z", n: 1 },
+        { dt: "2026-11-17T10:00:00Z", n: 0 },
+      ])
+      for (const field of [
+        mood(), // formula text not exposed
+        mood(`"Mood" * 2`), // not a literal CASE
+        mood(`CASE WHEN "Mood" = 'Great' THEN "Score" ELSE 0 END`), // non-literal result
+      ]) {
+        const m = buildCalendarModel(rows, [dateField, field], cfg("Average"))
+        expect(m.range).toEqual({ min: -2, max: 2 })
+      }
+    })
+
+    it("applies to Minimum and Maximum but not to Sum or Count", () => {
+      const rows = rowsOf([
+        { dt: "2026-11-16T10:00:00Z", n: 1 },
+        { dt: "2026-11-16T11:00:00Z", n: 2 },
+        { dt: "2026-11-17T10:00:00Z", n: 4 },
+        { dt: "2026-11-18T10:00:00Z", n: 9 },
+      ])
+      const range = (agg: ChartConfig["aggregate"]) =>
+        buildCalendarModel(rows, [dateField, numField], cfg(agg)).range
+      expect(range("Average")).toEqual({ min: 1, max: 9 })
+      expect(range("Minimum")).toEqual({ min: 1, max: 9 })
+      expect(range("Maximum")).toEqual({ min: 1, max: 9 })
+      expect(range("Sum")).toEqual({ min: 3, max: 9 }) // days only
+      expect(range("Count")).toEqual({ min: 1, max: 2 }) // days only
+    })
+
+    it("widens the formula range if a recorded value falls outside it", () => {
+      const rows = rowsOf([{ dt: "2026-11-16T10:00:00Z", n: 5 }])
+      const m = buildCalendarModel(rows, [dateField, mood(moodFormula)], cfg("Average"))
+      expect(m.range).toEqual({ min: -2, max: 5 })
+    })
+
+    it("ignores text literals and NULL when reading the formula", () => {
+      const rows = rowsOf([{ dt: "2026-11-16T10:00:00Z", n: 0 }])
+      const field = mood(`CASE WHEN "Tag" = 'THEN 99' THEN -1 ELSE 1 END`)
+      expect(buildCalendarModel(rows, [dateField, field], cfg("Average")).range).toEqual({
+        min: -1,
+        max: 1,
+      })
+    })
   })
 })
