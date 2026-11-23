@@ -86,6 +86,27 @@ describe("loadChartData", () => {
     })
   })
 
+  it("streams the full table into Calendar Heatmap and preserves the last day", async () => {
+    const total = 50_001
+    const table = mockTable((offset, limit) => ({
+      total,
+      rows: Array.from({ length: Math.min(limit, total - offset) }, (_, i) => ({
+        time: `${offset + i < 50_000 ? day : nextDay}T12:15:00.000Z`,
+        amount: offset + i < 50_000 ? 2 : null,
+      })),
+    }))
+    const result = await loadChartData(
+      table,
+      settings({ type: "Calendar Heatmap", value: "amount" }),
+      new AbortController().signal
+    )
+    expect(table.aggregate).not.toHaveBeenCalled()
+    expect(table.readRows).toHaveBeenCalledTimes(51)
+    expect(result.totalRecords).toBe(total)
+    expect(result.calendar?.days.get(day)).toMatchObject({ value: 50_000 })
+    expect(result.calendar?.days.get(nextDay)).toMatchObject({ value: 1 })
+  })
+
   it.each([
     ["Sum", 10],
     ["Average", 10 / 3],
@@ -221,5 +242,55 @@ describe("Value field settings", () => {
       loadChartData(table, legacy, new AbortController().signal)
     ).rejects.toThrow(/non-numeric values/)
     expect(table.aggregate).not.toHaveBeenCalled()
+  })
+})
+
+describe("Calendar Heatmap settings", () => {
+  const calendar = { type: "Calendar Heatmap" } as const
+  const temporalFormula: EidosFileFieldInfo = {
+    ...datetime,
+    type: "formula",
+    property: { displayType: "date" },
+  }
+
+  it("uses result types rather than accepting every Formula or Lookup as a date", () => {
+    expect(settings(calendar, [temporalFormula]).isConfigured).toBe(true)
+    expect(
+      settings(calendar, [
+        {
+          ...temporalFormula,
+          type: "lookup",
+          property: { valueType: "datetime" },
+        },
+      ]).isConfigured
+    ).toBe(true)
+    expect(
+      settings(calendar, [
+        { ...temporalFormula, property: { displayType: "integer" } },
+      ]).configProblem
+    ).toContain("Choose a date field")
+    expect(
+      settings(calendar, [
+        {
+          ...temporalFormula,
+          type: "lookup",
+          property: { aggregate: "values", displayType: "date" },
+        },
+      ]).isConfigured
+    ).toBe(false)
+  })
+
+  it("keeps #4's numeric field validation in the heatmap", () => {
+    const badScore: EidosFileFieldInfo = {
+      ...amount,
+      type: "formula",
+      property: { displayType: "text" },
+    }
+    expect(
+      settings({ ...calendar, aggregate: "Average", value: badScore.id }, [
+        datetime,
+        badScore,
+      ]).configProblem
+    ).toContain('"Amount" is incompatible')
   })
 })

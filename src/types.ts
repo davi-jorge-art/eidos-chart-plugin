@@ -3,7 +3,26 @@ import type {
   EidosFileViewInfo,
 } from "@eidos.space/eidos-file"
 
-export type ChartType = "Column" | "Bar" | "Line" | "Donut" | "Number"
+export type ChartType =
+  | "Column"
+  | "Bar"
+  | "Line"
+  | "Donut"
+  | "Number"
+  | "Calendar Heatmap"
+
+export type CalendarTimezone = "Local" | "UTC"
+
+export type CalendarColorName =
+  | "Blue"
+  | "Green"
+  | "Yellow"
+  | "Orange"
+  | "Red"
+  | "Pink"
+  | "Purple"
+  | "Brown"
+  | "Gray"
 
 export type ChartAggregate = "Count" | "Sum" | "Average" | "Minimum" | "Maximum"
 
@@ -19,6 +38,10 @@ export interface ChartConfig {
   date: ChartDateGrouping
   sort: ChartSort
   legend: boolean
+  /** Timezone for Calendar Heatmap datetime grouping and navigation. */
+  calendarTz?: CalendarTimezone
+  /** Base color of the Calendar Heatmap value scale. */
+  color?: CalendarColorName
 }
 
 export interface ChartDataItem {

@@ -1,3 +1,9 @@
+# Chart 0.4.0
+
+- **Calendar Heatmap** colors each day by Count or by Sum, Average, Minimum, or Maximum of a numeric Value field. Group by a date or date/time field to aggregate all matching records.
+- Choose a scale color and use Local or UTC for date/time grouping and Today. Date-only fields keep their calendar day.
+- Browse by month or week and select a populated day to open its latest record.
+
 # Chart 0.3.3
 
 - Group all matching `datetime` records by UTC day, month, or year. Timestamps without a timezone are read as UTC.

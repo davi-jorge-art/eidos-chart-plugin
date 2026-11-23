@@ -1,7 +1,4 @@
-import type {
-  EidosFileFieldInfo,
-  EidosFileRow,
-} from "@eidos.space/eidos-file"
+import type { EidosFileFieldInfo, EidosFileRow } from "@eidos.space/eidos-file"
 import type {
   TableAggregateDateInterval,
   TableAggregateMetric,
@@ -64,10 +61,7 @@ export function toTableAggregateOptions(
     Minimum: "min",
     Maximum: "max",
   }
-  const intervalMap: Record<
-    ChartConfig["date"],
-    TableAggregateDateInterval
-  > = {
+  const intervalMap: Record<ChartConfig["date"], TableAggregateDateInterval> = {
     Exact: "exact",
     Day: "day",
     Month: "month",
@@ -129,7 +123,7 @@ export function toFiniteNumber(raw: unknown): number | undefined {
 }
 
 /** Error text for a value field whose cells cannot be read as numbers. */
-export function unreadableValuesMessage(
+function unreadableValuesMessage(
   field: EidosFileFieldInfo,
   probe: { keyed: boolean; sample: unknown }
 ): string {
@@ -164,6 +158,75 @@ export function readCell(
   return undefined
 }
 
+export function createNumericValueReader(
+  field: EidosFileFieldInfo | undefined,
+  key: string
+) {
+  const probe = {
+    keyed: false,
+    raw: false,
+    numeric: false,
+    sample: undefined as unknown,
+  }
+  return {
+    read(row: EidosFileRow): number | undefined {
+      const raw = readCell(row, field, key)
+      if (raw !== undefined) probe.keyed = true
+      if (raw !== undefined && raw !== null && raw !== "") {
+        probe.raw = true
+        probe.sample ??= raw
+      }
+      const value = toFiniteNumber(raw)
+      if (value !== undefined) probe.numeric = true
+      return value
+    },
+    assertReadable(eligibleRows: number) {
+      if (
+        field &&
+        eligibleRows > 0 &&
+        !probe.numeric &&
+        (!probe.keyed || probe.raw)
+      ) {
+        throw new Error(unreadableValuesMessage(field, probe))
+      }
+    },
+  }
+}
+
+export class MetricAccumulator {
+  count = 0
+  numericCount = 0
+  private sum = 0
+  private min = Infinity
+  private max = -Infinity
+
+  add(value: number | undefined) {
+    this.count++
+    if (value === undefined) return
+    this.numericCount++
+    this.sum += value
+    this.min = Math.min(this.min, value)
+    this.max = Math.max(this.max, value)
+  }
+
+  value(aggregate: ChartAggregate): number {
+    switch (aggregate) {
+      case "Count":
+        return this.count
+      case "Sum":
+        return this.sum
+      case "Average":
+        return this.numericCount ? this.sum / this.numericCount : 0
+      case "Minimum":
+        return this.numericCount ? this.min : 0
+      case "Maximum":
+        return this.numericCount ? this.max : 0
+      default:
+        return 0
+    }
+  }
+}
+
 const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/
 const HAS_TIMEZONE = /(?:[zZ]|[+-]\d{2}(?::?\d{2})?)$/
 
@@ -185,10 +248,14 @@ export function toUtcIso(value: string | number): string | null {
     }
     timestamp = Date.parse(text)
   }
-  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : null
+  const date = new Date(timestamp)
+  return Number.isFinite(date.getTime()) ? date.toISOString() : null
 }
 
-function formatDateKey(raw: string | number, interval: ChartConfig["date"]): string {
+function formatDateKey(
+  raw: string | number,
+  interval: ChartConfig["date"]
+): string {
   if (interval === "Exact") return String(raw)
 
   const text = String(raw).trim()
@@ -199,7 +266,7 @@ function formatDateKey(raw: string | number, interval: ChartConfig["date"]): str
   const calendarValue =
     typeof raw === "string" && DATE_ONLY.test(text)
       ? text
-      : toUtcIso(raw) ?? text
+      : (toUtcIso(raw) ?? text)
 
   if (interval === "Year") return calendarValue.slice(0, 4)
   if (interval === "Month") return calendarValue.slice(0, 7)
@@ -228,7 +295,6 @@ export function createRowAggregator(
   const valueField = fields.find((f) => f.id === config.value)
 
   const groupCol = groupField?.tableColumnName ?? config.group
-  const valueCol = valueField?.tableColumnName ?? config.value
 
   const optionsMap = new Map<string, string>()
   if (
@@ -244,60 +310,24 @@ export function createRowAggregator(
   }
 
   const needsValues = config.aggregate !== "Count"
-  const probe = {
-    keyed: false,
-    raw: false,
-    numeric: false,
-    sample: undefined as unknown,
-  }
+  const values = createNumericValueReader(valueField, config.value)
   let totalRecords = 0
-  const readValue = (row: EidosFileRow): number | undefined => {
-    const raw = readCell(row, valueField, valueCol)
-    if (raw !== undefined) probe.keyed = true
-    if (raw !== undefined && raw !== null && raw !== "") {
-      probe.raw = true
-      probe.sample ??= raw
-    }
-    const n = toFiniteNumber(raw)
-    if (n !== undefined) probe.numeric = true
-    return n
-  }
-  function newBucket(key: unknown, label: string) {
-    return {
-      key,
-      label,
-      count: 0,
-      numericCount: 0,
-      sum: 0,
-      min: Infinity,
-      max: -Infinity,
-    }
-  }
-  const groups = new Map<string, ReturnType<typeof newBucket>>()
-  const total = newBucket(null, "Total")
+  const groups = new Map<
+    string,
+    { key: unknown; label: string; metric: MetricAccumulator }
+  >()
+  const total = { key: null, label: "Total", metric: new MetricAccumulator() }
 
   const isList =
     groupField?.storageCodec === "json_array" ||
     groupField?.storageCodec === "relation"
 
-  function addValue(
-    bucket: ReturnType<typeof newBucket>,
-    value: number | undefined
-  ) {
-    bucket.count++
-    if (value === undefined) return
-    bucket.numericCount++
-    bucket.sum += value
-    bucket.min = Math.min(bucket.min, value)
-    bucket.max = Math.max(bucket.max, value)
-  }
-
   function addRows(rows: EidosFileRow[]) {
     totalRecords += rows.length
     for (const row of rows) {
-      const numeric = needsValues ? readValue(row) : undefined
+      const numeric = needsValues ? values.read(row) : undefined
       if (!groupField) {
-        addValue(total, numeric)
+        total.metric.add(numeric)
         continue
       }
 
@@ -317,50 +347,29 @@ export function createRowAggregator(
           if (bucketKey == null || bucketKey === "") {
             label = "(Empty)"
           } else if (groupField.type === "checkbox") {
-            label = bucketKey === 1 || bucketKey === true ? "Checked" : "Unchecked"
+            label =
+              bucketKey === 1 || bucketKey === true ? "Checked" : "Unchecked"
           } else if (typeof bucketKey === "string") {
             label = optionsMap.get(bucketKey) ?? label
           }
-          bucket = newBucket(bucketKey, label)
+          bucket = { key: bucketKey, label, metric: new MetricAccumulator() }
           groups.set(stringKey, bucket)
         }
-        addValue(bucket, numeric)
+        bucket.metric.add(numeric)
       }
     }
   }
 
   function finish(): ChartDataResult {
-    if (
-      needsValues &&
-      valueField &&
-      totalRecords > 0 &&
-      !probe.numeric &&
-      (!probe.keyed || probe.raw)
-    ) {
-      throw new Error(unreadableValuesMessage(valueField, probe))
-    }
+    if (needsValues) values.assertReadable(totalRecords)
 
     const items: ChartDataItem[] = []
     for (const bucket of groupField ? groups.values() : [total]) {
-      let value = 0
-      switch (config.aggregate) {
-        case "Count":
-          value = bucket.count
-          break
-        case "Sum":
-          value = bucket.sum
-          break
-        case "Average":
-          value = bucket.numericCount ? bucket.sum / bucket.numericCount : 0
-          break
-        case "Minimum":
-          value = bucket.numericCount ? bucket.min : 0
-          break
-        case "Maximum":
-          value = bucket.numericCount ? bucket.max : 0
-          break
-      }
-      items.push({ key: bucket.key, label: bucket.label, value })
+      items.push({
+        key: bucket.key,
+        label: bucket.label,
+        value: bucket.metric.value(config.aggregate),
+      })
     }
 
     if (config.sort === "Value descending") {

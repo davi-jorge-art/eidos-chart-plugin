@@ -2,13 +2,13 @@ import { useEffect, useRef, useState } from "react"
 import { createRoot } from "react-dom/client"
 import type { Mount, EidosTable } from "@eidos.space/plugin-sdk"
 import { exportChartPng, type ChartHostUI } from "./export"
-import { loadChartData, readChartSettings } from "./data"
+import { loadChartData, readChartSettings, type LoadedChartData } from "./data"
+import { CalendarView } from "./charts/calendar-view"
 import { ChartCanvas } from "./charts/chart-canvas"
 import { NumberCard } from "./charts/number-card"
-import type { ChartDataResult } from "./types"
 import "./style.css"
 
-const EMPTY_CHART: ChartDataResult = { items: [], totalRecords: 0 }
+const EMPTY_CHART: LoadedChartData = { items: [], totalRecords: 0 }
 
 function useColorScheme(): boolean {
   const [isDark, setIsDark] = useState(() => {
@@ -72,11 +72,20 @@ function ChartView({
   }, [])
   const isDark = useColorScheme()
   const [settings, setSettings] = useState(() => readChartSettings())
-  const { config, groupField, valueField, configProblem, isConfigured } = settings
-  const [data, setData] = useState(EMPTY_CHART)
+  const { config, groupField, valueField, configProblem, isConfigured } =
+    settings
+  const [result, setResult] = useState<{
+    key: string
+    data: LoadedChartData
+  } | null>(null)
+  const currentResult = result?.key === JSON.stringify(config) ? result : null
+  const data = currentResult?.data ?? EMPTY_CHART
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState("")
+  const [openRecordError, setOpenRecordError] = useState("")
   const [revision, setRevision] = useState(0)
+  const isHeatmap = config.type === "Calendar Heatmap"
+  const canExport = !isHeatmap && config.type !== "Number"
 
   // Listen to invalidation events from the table
   useEffect(() => {
@@ -89,6 +98,7 @@ function ChartView({
     const { signal } = controller
     setLoading(true)
     setError("")
+    setOpenRecordError("")
 
     async function loadData() {
       try {
@@ -96,13 +106,16 @@ function ChartView({
         if (signal.aborted) return
         const next = readChartSettings(snapshot)
         setSettings(next)
-        const result = next.isConfigured
-          ? await loadChartData(table, next, signal)
-          : EMPTY_CHART
-        if (!signal.aborted) setData(result)
+        const loaded = next.isConfigured
+          ? {
+              key: JSON.stringify(next.config),
+              data: await loadChartData(table, next, signal),
+            }
+          : null
+        if (!signal.aborted) setResult(loaded)
       } catch (err) {
         if (!signal.aborted) {
-          setData(EMPTY_CHART)
+          setResult(null)
           setError(err instanceof Error ? err.message : String(err))
         }
       } finally {
@@ -141,15 +154,30 @@ function ChartView({
     }
   }
 
+  const openRecord = (rowId: string) => {
+    setOpenRecordError("")
+    void table.openRecord(rowId).catch((cause) => {
+      if (active.current) {
+        const message = cause instanceof Error ? cause.message : String(cause)
+        setOpenRecordError(`Could not open the record. ${message}`)
+      }
+    })
+  }
+
   return (
-    <main className={`chart-root${embedded ? " chart-embedded" : ""}`} ref={chartRoot}>
+    <main
+      className={`chart-root${embedded ? " chart-embedded" : ""}`}
+      ref={chartRoot}
+    >
       {!embedded && (
         <header className="chart-header">
           <div className="chart-title-area">
             <h1 className="chart-title">
               {config.type === "Number"
                 ? "Metric"
-                : `${groupField?.name ?? "Items"} by ${config.aggregate}`}
+                : isHeatmap
+                  ? "Calendar Heatmap"
+                  : `${groupField?.name ?? "Items"} by ${config.aggregate}`}
             </h1>
             {isConfigured && !error && (
               <span className="chart-record-count">
@@ -159,23 +187,20 @@ function ChartView({
             )}
           </div>
           <div className="chart-actions">
-            {config.type !== "Number" &&
-              isConfigured &&
-              !error &&
-              data.items.length > 0 && (
-                <button
-                  className="chart-btn"
-                  onClick={exportImage}
-                  disabled={exporting || loading || !ui.exportFile}
-                  title={
-                    ui.exportFile
-                      ? "Export as PNG image"
-                      : "PNG export requires an Eidos host with file export support"
-                  }
-                >
-                  {exporting ? "Exporting…" : "Export PNG"}
-                </button>
-              )}
+            {canExport && isConfigured && !error && data.items.length > 0 && (
+              <button
+                className="chart-btn"
+                onClick={exportImage}
+                disabled={exporting || loading || !ui.exportFile}
+                title={
+                  ui.exportFile
+                    ? "Export as PNG image"
+                    : "PNG export requires an Eidos host with file export support"
+                }
+              >
+                {exporting ? "Exporting…" : "Export PNG"}
+              </button>
+            )}
             <button
               className="chart-btn"
               onClick={() => setRevision((v) => v + 1)}
@@ -187,16 +212,22 @@ function ChartView({
         </header>
       )}
       <div role="status" aria-live="polite" className="chart-export-status">
-        {exportStatus ||
-          (!ui.exportFile && config.type !== "Number"
-            ? "PNG export requires an Eidos host with file export support."
-            : "")}
+        {canExport &&
+          (exportStatus ||
+            (!ui.exportFile
+              ? "PNG export requires an Eidos host with file export support."
+              : ""))}
       </div>
 
       {error && (
         <div className="chart-error" role="alert">
           <span>{error}</span>
           <button onClick={() => setRevision((v) => v + 1)}>Retry</button>
+        </div>
+      )}
+      {isHeatmap && openRecordError && (
+        <div className="chart-error" role="alert">
+          {openRecordError}
         </div>
       )}
 
@@ -221,13 +252,31 @@ function ChartView({
             <div className="chart-empty-hint">
               {configProblem
                 ? configProblem
-                : !groupField && config.type !== "Number"
-                ? "Select a 'Group by' field in the View settings menu above."
-                : "Select a numeric 'Value field' in View settings to calculate."}
+                : !groupField && isHeatmap
+                  ? "Choose a date field for Group by."
+                  : !groupField && config.type !== "Number"
+                    ? "Select a 'Group by' field in the View settings menu above."
+                    : "Select a numeric 'Value field' in View settings to calculate."}
             </div>
           </div>
-        ) : loading && data.items.length === 0 ? (
+        ) : loading && !currentResult ? (
           <div className="chart-loading">Loading chart data…</div>
+        ) : data.calendar ? (
+          <CalendarView
+            model={data.calendar}
+            timezone={config.calendarTz ?? "Local"}
+            color={config.color ?? "Blue"}
+            isDark={isDark}
+            showLegend={config.legend}
+            legendLabel={
+              config.aggregate === "Count" || !valueField
+                ? "Count"
+                : `${config.aggregate} of ${valueField.name}`
+            }
+            onOpenRecord={
+              typeof table.openRecord === "function" ? openRecord : undefined
+            }
+          />
         ) : data.totalRecords === 0 ? (
           <div className="chart-empty">
             <div className="chart-empty-title">No Records</div>
