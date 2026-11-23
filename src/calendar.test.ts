@@ -1,0 +1,199 @@
+import { describe, expect, it } from "vitest"
+import type { EidosFileFieldInfo, EidosFileRow } from "@eidos.space/eidos-file"
+import type { ChartConfig } from "./types"
+import {
+  buildCalendarModel,
+  CALENDAR_COLORS,
+  contrastText,
+  dayKeyForInstant,
+  dayKeyOf,
+  scaleColor,
+} from "./calendar"
+
+const f = (o: Record<string, unknown>) => o as unknown as EidosFileFieldInfo
+const rowsOf = (r: unknown[]) => r as unknown as EidosFileRow[]
+
+const dateField = f({
+  id: "f_dt",
+  name: "Date/Time",
+  type: "datetime",
+  tableColumnName: "dt",
+})
+const numField = f({
+  id: "f_n",
+  name: "Mood Number Values",
+  type: "formula",
+  tableColumnName: "n",
+})
+const cfg = (aggregate: ChartConfig["aggregate"], value = "f_n") => ({
+  group: "f_dt",
+  value,
+  aggregate,
+  calendarTz: "UTC" as const,
+})
+
+describe("colored calendar", () => {
+  it("averages the numeric value per day and leaves days without entries empty", () => {
+    const rows = rowsOf([
+      { _id: "a", dt: "2026-11-17T18:17:00.000Z", n: 2 },
+      { _id: "b", dt: "2026-11-17T03:00:00.000Z", n: "2" },
+      { _id: "c", dt: "2026-11-16T12:00:00.000Z", n: 1n },
+      { _id: "d", dt: "2026-11-16T18:00:00.000Z", n: -1 },
+    ])
+    const m = buildCalendarModel(rows, [dateField, numField], cfg("Average"))
+    expect(m.range).toEqual({ min: 0, max: 2 })
+    expect(m.days.get("2026-11-17")).toMatchObject({
+      value: 2,
+      count: 2,
+      rowId: "a",
+    })
+    expect(m.days.get("2026-11-16")).toMatchObject({
+      value: 0,
+      count: 2,
+      rowId: "d",
+    })
+    expect(m.days.has("2026-11-18")).toBe(false)
+  })
+
+  it("applies Sum, Minimum, Maximum and Count", () => {
+    const rows = rowsOf([
+      { dt: "2026-11-16T10:00:00Z", n: 3 },
+      { dt: "2026-11-16T11:00:00Z", n: 5 },
+      { dt: "2026-11-16T12:00:00Z", n: null },
+    ])
+    const value = (agg: ChartConfig["aggregate"]) =>
+      buildCalendarModel(rows, [dateField, numField], cfg(agg)).days.get(
+        "2026-11-16"
+      )?.value
+    expect(value("Sum")).toBe(8)
+    expect(value("Minimum")).toBe(3)
+    expect(value("Maximum")).toBe(5)
+    expect(value("Count")).toBe(3)
+  })
+
+  it("leaves a day empty when it has entries but no numeric value", () => {
+    const rows = rowsOf([
+      { dt: "2026-11-16T10:00:00Z", n: null },
+      { dt: "2026-11-17T10:00:00Z", n: 4 },
+    ])
+    const m = buildCalendarModel(rows, [dateField, numField], cfg("Average"))
+    expect(m.days.has("2026-11-16")).toBe(false)
+    expect(m.days.has("2026-11-17")).toBe(true)
+  })
+
+  it("Count needs no value field", () => {
+    const rows = rowsOf([
+      { dt: "2026-11-16T10:00:00Z" },
+      { dt: "2026-11-17T10:00:00Z" },
+      { dt: "2026-11-17T11:00:00Z" },
+    ])
+    const m = buildCalendarModel(rows, [dateField], cfg("Count", ""))
+    expect(m.days.get("2026-11-17")?.value).toBe(2)
+    expect(m.range).toEqual({ min: 1, max: 2 })
+  })
+
+  it("opens the latest date-only record independently of view sorting", () => {
+    const fields = [
+      { ...dateField, type: "date" as const },
+      f({
+        id: "created",
+        type: "created-time",
+        tableColumnName: "created",
+        systemRole: "created-time",
+      }),
+    ]
+    const rows = rowsOf([
+      { _id: "a", dt: "2026-11-17", created: "2026-11-17T12:00:00Z" },
+      { _id: "b", dt: "2026-11-17", created: "2026-11-17T07:00:00Z" },
+    ])
+    expect(
+      buildCalendarModel(rows, fields, cfg("Count")).days.get("2026-11-17")
+        ?.rowId
+    ).toBe("a")
+    expect(
+      buildCalendarModel([...rows].reverse(), fields, cfg("Count")).days.get(
+        "2026-11-17"
+      )?.rowId
+    ).toBe("a")
+  })
+
+  it("uses the same normalized datetime for record order and day grouping", () => {
+    const rows = rowsOf([
+      { _id: "later", dt: "2026-11-17T23:20:00Z" },
+      { _id: "earlier", dt: "2026-11-17 23:15:00" },
+    ])
+    const model = buildCalendarModel(rows, [dateField], cfg("Count"))
+    expect(model.days.get("2026-11-17")?.rowId).toBe("later")
+  })
+
+  it("reports an error instead of an empty calendar when values are unreadable", () => {
+    const text = [{ dt: "2026-11-16T10:00:00Z", n: "Great" }]
+    expect(() =>
+      buildCalendarModel(rowsOf(text), [dateField, numField], cfg("Average"))
+    ).toThrow(/Mood Number Values/)
+    const missing = [{ dt: "2026-11-16T10:00:00Z" }]
+    expect(() =>
+      buildCalendarModel(rowsOf(missing), [dateField, numField], cfg("Average"))
+    ).toThrow(/did not return/)
+    const empty = [{ dt: "2026-11-16T10:00:00Z", n: null }]
+    expect(
+      buildCalendarModel(rowsOf(empty), [dateField, numField], cfg("Average"))
+        .days.size
+    ).toBe(0)
+  })
+
+  it("skips rows without a readable date", () => {
+    const rows = rowsOf([
+      { dt: null, n: 1 },
+      { dt: "nope", n: 1 },
+      { dt: "2026-11-16T10:00:00Z", n: 1 },
+    ])
+    const m = buildCalendarModel(rows, [dateField, numField], cfg("Sum"))
+    expect(m.skipped).toBe(2)
+    expect(m.days.size).toBe(1)
+  })
+
+  it("reports skipped rows without a value-field error when there is no readable date", () => {
+    const rows = rowsOf([
+      { dt: null, n: 42 },
+      { dt: "2026-02-30", n: 5 },
+    ])
+    expect(
+      buildCalendarModel(rows, [dateField, numField], cfg("Average"))
+    ).toEqual({
+      days: new Map(),
+      range: undefined,
+      totalRecords: 2,
+      skipped: 2,
+    })
+  })
+
+  it("assigns days by UTC or by local time", () => {
+    const raw = "2026-11-17T02:30:00.000Z"
+    expect(dayKeyOf(raw, "UTC")).toBe("2026-11-17")
+    const d = new Date(raw)
+    const local = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`
+    expect(dayKeyOf(raw, "Local")).toBe(local)
+    expect(dayKeyForInstant(d, "Local")).toBe(local)
+    expect(dayKeyForInstant(d, "UTC")).toBe("2026-11-17")
+    expect(dayKeyOf("2026-11-17", "Local")).toBe("2026-11-17")
+    expect(dayKeyOf("2026-11-17 23:30:00", "UTC")).toBe("2026-11-17")
+    expect(dayKeyOf("hello", "UTC")).toBeNull()
+    expect(dayKeyOf(1e20, "UTC")).toBeNull()
+  })
+
+  it("scales from neutral to the base color with readable text", () => {
+    expect(scaleColor(10, 0, 10, CALENDAR_COLORS.Blue, false)).toBe(
+      CALENDAR_COLORS.Blue
+    )
+    expect(scaleColor(10, 0, 10, CALENDAR_COLORS.Green, true)).toBe(
+      CALENDAR_COLORS.Green
+    )
+    expect(scaleColor(5, 5, 5, CALENDAR_COLORS.Blue, false)).not.toBe(
+      CALENDAR_COLORS.Blue
+    )
+    expect(contrastText(CALENDAR_COLORS.Blue)).toBe("#1f1f1e")
+    expect(contrastText("#ffffff")).toBe("#1f1f1e")
+    expect(contrastText("#000000")).toBe("#ffffff")
+  })
+})

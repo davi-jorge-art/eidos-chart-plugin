@@ -292,3 +292,127 @@ body,
   opacity: 0.5;
   cursor: default;
 }
+
+/* Calendar */
+.cal-root {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+  min-height: 0;
+  padding-bottom: 8px;
+}
+.cal-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.cal-title {
+  flex: 1 1 120px;
+  text-align: center;
+  font-size: 15px;
+  font-weight: 600;
+}
+.cal-title::first-letter {
+  text-transform: uppercase;
+}
+.cal-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  grid-template-rows: auto;
+  grid-auto-rows: minmax(56px, 1fr);
+  gap: 6px;
+}
+.cal-dow {
+  text-align: center;
+  font-size: 12px;
+  color: var(--chart-subtext);
+  text-transform: capitalize;
+  padding-bottom: 2px;
+}
+.cal-cell {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 6px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--chart-border);
+  background: var(--chart-card-bg);
+  overflow: hidden;
+  min-width: 0;
+  text-align: start;
+}
+.cal-cell-blank {
+  border-color: transparent;
+  background: transparent;
+}
+.cal-cell-filled {
+  border-color: transparent;
+}
+.cal-cell-clickable {
+  cursor: pointer;
+}
+.cal-cell-clickable:hover {
+  filter: brightness(1.08);
+}
+.cal-cell-clickable:focus-visible {
+  outline: 2px solid var(--chart-accent);
+  outline-offset: 2px;
+}
+.cal-cell-today {
+  outline: 2px solid var(--chart-accent);
+  outline-offset: -2px;
+}
+.cal-daynum {
+  font-size: 12px;
+  font-weight: 600;
+}
+.cal-label {
+  max-width: 100%;
+  font-size: 12px;
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cal-segment {
+  display: inline-flex;
+  gap: 2px;
+}
+.cal-active {
+  background: var(--chart-btn-hover);
+  font-weight: 600;
+}
+.cal-week .cal-grid {
+  grid-auto-rows: minmax(140px, 1fr);
+}
+.cal-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+  font-size: 12px;
+  color: var(--chart-subtext);
+}
+.cal-scale {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.cal-gradient {
+  width: 140px;
+  height: 12px;
+  border-radius: 6px;
+  border: 1px solid var(--chart-border);
+}
+.cal-legend-field {
+  margin-left: auto;
+}
+.cal-message {
+  color: var(--chart-subtext);
+  font-size: 12px;
+}

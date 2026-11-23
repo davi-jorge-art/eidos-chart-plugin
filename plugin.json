@@ -5,7 +5,7 @@
   },
   "id": "eidos.chart",
   "name": "Chart",
-  "version": "0.3.3",
+  "version": "0.4.0",
   "icon": {
     "paths": [
       "M3 3v18h18",
@@ -38,21 +38,23 @@
               "Bar",
               "Line",
               "Donut",
-              "Number"
+              "Number",
+              "Calendar Heatmap"
             ]
           },
           "group": {
             "type": "string",
             "title": "Group by",
             "default": "",
-            "x-field": true
+            "x-field": true,
+            "description": "Category field for charts, or date field for the Calendar Heatmap."
           },
           "value": {
             "type": "string",
             "title": "Value field",
             "default": "",
             "x-field": true,
-            "description": "Required for numeric aggregations. Count counts records."
+            "description": "Numeric field (number, rating or numeric Formula) used by Sum, Average, Minimum and Maximum. Not needed for Count."
           },
           "aggregate": {
             "type": "string",
@@ -64,7 +66,8 @@
               "Average",
               "Minimum",
               "Maximum"
-            ]
+            ],
+            "description": "Calendar Heatmap uses this result to color each day."
           },
           "date": {
             "type": "string",
@@ -91,6 +94,33 @@
             "type": "boolean",
             "title": "Show legend",
             "default": true
+          },
+          "timezone": {
+            "type": "string",
+            "title": "Calendar day timezone",
+            "default": "Local",
+            "enum": [
+              "Local",
+              "UTC"
+            ],
+            "description": "Calendar Heatmap uses this timezone to group date/time entries and determine today."
+          },
+          "color": {
+            "type": "string",
+            "title": "Calendar Heatmap color",
+            "default": "Blue",
+            "enum": [
+              "Blue",
+              "Green",
+              "Yellow",
+              "Orange",
+              "Red",
+              "Pink",
+              "Purple",
+              "Brown",
+              "Gray"
+            ],
+            "description": "Base color of the Calendar Heatmap scale."
           }
         }
       },
