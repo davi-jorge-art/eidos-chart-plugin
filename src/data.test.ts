@@ -20,7 +20,7 @@ const day = "2026-11-22"
 const nextDay = "2026-11-23"
 
 function settings(
-  config: Partial<ChartConfig>,
+  config: Partial<ChartConfig> & Record<string, unknown>,
   fields: EidosFileFieldInfo[] = [datetime, amount]
 ) {
   const view: EidosTableSnapshot["view"] = {
@@ -57,6 +57,63 @@ function mockTable(
     })),
   }
 }
+
+describe("calendar color scale settings", () => {
+  const cal = { type: "Calendar Heatmap" as const, aggregate: "Count" as const }
+
+  it("leaves limits undefined for existing configurations", () => {
+    const { config, configProblem } = settings(cal)
+    expect(config.colorScaleMin).toBeUndefined()
+    expect(config.colorScaleMax).toBeUndefined()
+    expect(configProblem).toBe("")
+  })
+
+  it("reads valid user limits", () => {
+    const { config, configProblem, isConfigured } = settings({
+      ...cal,
+      "scale-min": "-2",
+      "scale-max": " 2 ",
+    })
+    expect(config.colorScaleMin).toBe(-2)
+    expect(config.colorScaleMax).toBe(2)
+    expect(configProblem).toBe("")
+    expect(isConfigured).toBe(true)
+  })
+
+  it("rejects a single limit", () => {
+    const r = settings({ ...cal, "scale-min": "-2" })
+    expect(r.configProblem).toContain("both")
+    expect(r.isConfigured).toBe(false)
+  })
+
+  it("rejects inverted limits", () => {
+    const r = settings({ ...cal, "scale-min": "2", "scale-max": "-2" })
+    expect(r.configProblem).toContain("less than or equal")
+    expect(r.isConfigured).toBe(false)
+  })
+
+  it("accepts a decimal comma and treats empty text as automatic", () => {
+    const ok = settings({ ...cal, "scale-min": "-1,5", "scale-max": "0.5" })
+    expect(ok.config.colorScaleMin).toBe(-1.5)
+    expect(ok.config.colorScaleMax).toBe(0.5)
+    const empty = settings({ ...cal, "scale-min": "", "scale-max": "  " })
+    expect(empty.config.colorScaleMin).toBeUndefined()
+    expect(empty.configProblem).toBe("")
+  })
+
+  it("rejects text that is not a number", () => {
+    const r = settings({ ...cal, "scale-min": "abc", "scale-max": "2" })
+    expect(r.configProblem).toContain("must be numbers")
+    expect(r.isConfigured).toBe(false)
+    const both = settings({ ...cal, "scale-min": "x", "scale-max": "y" })
+    expect(both.configProblem).toContain("must be numbers")
+  })
+
+  it("ignores the limits for other chart types", () => {
+    const r = settings({ type: "Column", "scale-min": "5" })
+    expect(r.configProblem).toBe("")
+  })
+})
 
 describe("loadChartData", () => {
   it("includes the last UTC day when more than 50,000 records match", async () => {

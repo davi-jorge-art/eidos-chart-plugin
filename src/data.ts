@@ -27,14 +27,29 @@ const DATE_TYPES = new Set<unknown>([
 ])
 const NUMERIC_TYPES = new Set<unknown>(["number", "integer", "rating"])
 
+/** Scale bounds are text settings (a number setting cannot be empty), so an
+ * empty value means "automatic" and anything else must parse as a number. */
+function readScaleBound(raw: unknown): { value?: number; invalid: boolean } {
+  if (typeof raw === "number") {
+    return Number.isFinite(raw) ? { value: raw, invalid: false } : { invalid: true }
+  }
+  if (typeof raw !== "string" || !raw.trim()) return { invalid: false }
+  const value = Number(raw.trim().replace(",", "."))
+  return Number.isFinite(value) ? { value, invalid: false } : { invalid: true }
+}
+
 export function readChartSettings(snapshot?: EidosTableSnapshot) {
   const saved = snapshot?.view.properties?.plugin as
     | (Omit<Partial<ChartConfig>, "type"> & {
         type?: ChartConfig["type"] | "Calendar" | "Colored Calendar"
         timezone?: ChartConfig["calendarTz"]
+        "scale-min"?: unknown
+        "scale-max"?: unknown
       })
     | undefined
   const type = saved?.type
+  const scaleMin = readScaleBound(saved?.["scale-min"])
+  const scaleMax = readScaleBound(saved?.["scale-max"])
   const config: ChartConfig = {
     type:
       type === "Calendar" || type === "Colored Calendar"
@@ -48,6 +63,8 @@ export function readChartSettings(snapshot?: EidosTableSnapshot) {
     legend: saved?.legend ?? true,
     calendarTz: saved?.timezone ?? "Local",
     color: saved?.color ?? "Blue",
+    colorScaleMin: scaleMin.value,
+    colorScaleMax: scaleMax.value,
   }
   const fields = snapshot?.fields ?? []
   const groupField = fields.find((field) => field.id === config.group)
@@ -70,6 +87,27 @@ export function readChartSettings(snapshot?: EidosTableSnapshot) {
     !NUMERIC_TYPES.has(valueType)
   ) {
     configProblem = `"${valueField.name}" is incompatible with ${config.aggregate}. Choose a numeric Value field or set Calculate to Count.`
+  } else if (
+    config.type === "Calendar Heatmap" &&
+    (scaleMin.invalid || scaleMax.invalid)
+  ) {
+    configProblem =
+      "Color scale minimum and maximum must be numbers, for example -2 and 2."
+  } else if (
+    config.type === "Calendar Heatmap" &&
+    (config.colorScaleMin === undefined) !==
+      (config.colorScaleMax === undefined)
+  ) {
+    configProblem =
+      "Set both Color scale minimum and Color scale maximum, or clear both to use the range of the data."
+  } else if (
+    config.type === "Calendar Heatmap" &&
+    config.colorScaleMin !== undefined &&
+    config.colorScaleMax !== undefined &&
+    config.colorScaleMin > config.colorScaleMax
+  ) {
+    configProblem =
+      "Color scale minimum must be less than or equal to Color scale maximum."
   }
 
   return {

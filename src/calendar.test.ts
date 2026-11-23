@@ -196,4 +196,69 @@ describe("colored calendar", () => {
     expect(contrastText("#ffffff")).toBe("#1f1f1e")
     expect(contrastText("#000000")).toBe("#ffffff")
   })
+
+  describe("user-defined color scale", () => {
+    const rows = rowsOf([
+      { dt: "2026-11-16T10:00:00Z", n: 0.5 },
+      { dt: "2026-11-17T10:00:00Z", n: 2 },
+    ])
+
+    it("uses the configured limits instead of the observed range", () => {
+      const m = buildCalendarModel(rows, [dateField, numField], {
+        ...cfg("Average"),
+        colorScaleMin: -2,
+        colorScaleMax: 2,
+      })
+      expect(m.range).toEqual({ min: -2, max: 2 })
+      expect(m.days.get("2026-11-16")?.value).toBe(0.5)
+      expect(m.days.get("2026-11-17")?.value).toBe(2)
+      expect(m.days.has("2026-11-18")).toBe(false)
+    })
+
+    it("keeps the data range when no limits are set", () => {
+      const m = buildCalendarModel(rows, [dateField, numField], cfg("Average"))
+      expect(m.range).toEqual({ min: 0.5, max: 2 })
+    })
+
+    it("ignores incomplete or inverted limits", () => {
+      const only = buildCalendarModel(rows, [dateField, numField], {
+        ...cfg("Average"),
+        colorScaleMin: -2,
+      })
+      expect(only.range).toEqual({ min: 0.5, max: 2 })
+      const inverted = buildCalendarModel(rows, [dateField, numField], {
+        ...cfg("Average"),
+        colorScaleMin: 2,
+        colorScaleMax: -2,
+      })
+      expect(inverted.range).toEqual({ min: 0.5, max: 2 })
+    })
+
+    it("shows the configured range even when there are no records", () => {
+      const m = buildCalendarModel([], [dateField, numField], {
+        ...cfg("Average"),
+        colorScaleMin: -2,
+        colorScaleMax: 2,
+      })
+      expect(m.range).toEqual({ min: -2, max: 2 })
+    })
+
+    it("places a day by its position between the user limits", () => {
+      const blue = CALENDAR_COLORS.Blue
+      const mid = scaleColor(0.5, -2, 2, blue, false)
+      expect(mid).not.toBe(scaleColor(0.5, 0.5, 2, blue, false))
+      expect(scaleColor(2, -2, 2, blue, false)).toBe(blue)
+      expect(scaleColor(-2, -2, 2, blue, false)).not.toBe(blue)
+    })
+
+    it("clamps values outside the scale to the extremes", () => {
+      const blue = CALENDAR_COLORS.Blue
+      expect(scaleColor(-10, -2, 2, blue, false)).toBe(
+        scaleColor(-2, -2, 2, blue, false)
+      )
+      expect(scaleColor(10, -2, 2, blue, false)).toBe(
+        scaleColor(2, -2, 2, blue, false)
+      )
+    })
+  })
 })

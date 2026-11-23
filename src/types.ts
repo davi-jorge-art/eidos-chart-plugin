@@ -42,6 +42,10 @@ export interface ChartConfig {
   calendarTz?: CalendarTimezone
   /** Base color of the Calendar Heatmap value scale. */
   color?: CalendarColorName
+  /** User-defined lower bound of the Calendar Heatmap color scale. */
+  colorScaleMin?: number
+  /** User-defined upper bound of the Calendar Heatmap color scale. */
+  colorScaleMax?: number
 }
 
 export interface ChartDataItem {

@@ -77,7 +77,9 @@ export function scaleColor(
   baseColor: string,
   isDark: boolean
 ): string {
-  const t = max === min ? 0.7 : 0.15 + 0.85 * ((value - min) / (max - min))
+  // Values outside the scale take the color of the nearest extreme.
+  const fraction = Math.max(0, Math.min(1, (value - min) / (max - min)))
+  const t = max === min ? 0.7 : 0.15 + 0.85 * fraction
   return mix(neutralRgb(isDark), hexToRgb(baseColor), t)
 }
 
@@ -120,7 +122,12 @@ export function dayKeyOf(
 
 type CalendarConfig = Pick<
   ChartConfig,
-  "group" | "value" | "aggregate" | "calendarTz"
+  | "group"
+  | "value"
+  | "aggregate"
+  | "calendarTz"
+  | "colorScaleMin"
+  | "colorScaleMax"
 >
 
 interface RecordOrder {
@@ -198,9 +205,19 @@ export function createCalendarAggregator(
       min = Math.min(min, value)
       max = Math.max(max, value)
     }
+    const dataRange = days.size ? { min, max } : undefined
+    const { colorScaleMin, colorScaleMax } = config
+    // User-defined limits win over the observed range; only complete,
+    // ordered pairs are honored (data.ts reports anything else).
+    const customRange =
+      Number.isFinite(colorScaleMin) &&
+      Number.isFinite(colorScaleMax) &&
+      colorScaleMin! <= colorScaleMax!
+        ? { min: colorScaleMin!, max: colorScaleMax! }
+        : undefined
     return {
       days,
-      range: days.size ? { min, max } : undefined,
+      range: customRange ?? dataRange,
       totalRecords,
       skipped,
     }
