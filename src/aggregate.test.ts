@@ -148,4 +148,177 @@ describe("aggregate", () => {
     expect(formatMetricNumber(1234.567)).toBe("1,234.57")
     expect(formatMetricNumber(0)).toBe("0")
   })
+
+  it("calculates average grouped by UTC day for datetime fields", () => {
+    const fields = [
+      {
+        id: "f_datetime",
+        name: "Date/Time",
+        type: "datetime",
+        tableColumnName: "col_datetime",
+      },
+      {
+        id: "f_mood",
+        name: "Mood Number Values",
+        type: "formula",
+        tableColumnName: "col_mood",
+      },
+    ] as unknown as EidosFileFieldInfo[]
+    const rows = [
+      { col_datetime: "2026-11-16T09:00:00.000Z", col_mood: -2 },
+      { col_datetime: "2026-11-16T14:00:00.000Z", col_mood: 2 },
+      { col_datetime: "2026-11-17T09:00:00.000Z", col_mood: 0 },
+    ] as unknown as EidosFileRow[]
+    const config: ChartConfig = {
+      type: "Line",
+      group: "f_datetime",
+      value: "f_mood",
+      aggregate: "Average",
+      date: "Day",
+      sort: "Label",
+      legend: false,
+    }
+
+    const result = aggregateRowsClientSide(rows, fields, config)
+    expect(result.totalRecords).toBe(3)
+    expect(result.items).toEqual([
+      { key: "2026-11-16", label: "2026-11-16", value: 0 },
+      { key: "2026-11-17", label: "2026-11-17", value: 0 },
+    ])
+  })
+
+  it("normalizes datetime offsets to UTC before daily grouping", () => {
+    const fields = [
+      {
+        id: "f_datetime",
+        name: "Date/Time",
+        type: "datetime",
+        tableColumnName: "col_datetime",
+      },
+      {
+        id: "f_mood",
+        name: "Mood Number Values",
+        type: "formula",
+        tableColumnName: "col_mood",
+      },
+    ] as unknown as EidosFileFieldInfo[]
+    const rows = [
+      { col_datetime: "2026-11-17T01:00:00.000+03:00", col_mood: 1 },
+      { col_datetime: "2026-11-16T22:00:00.000Z", col_mood: -1 },
+    ] as unknown as EidosFileRow[]
+    const config: ChartConfig = {
+      type: "Line",
+      group: "f_datetime",
+      value: "f_mood",
+      aggregate: "Average",
+      date: "Day",
+      sort: "Label",
+      legend: false,
+    }
+
+    const result = aggregateRowsClientSide(rows, fields, config)
+    expect(result.items).toEqual([
+      { key: "2026-11-16", label: "2026-11-16", value: 0 },
+    ])
+  })
+
+  it("treats datetime strings without timezone as UTC, regardless of local timezone", () => {
+    const fields = [
+      { id: "f_dt", name: "Date/Time", type: "datetime", tableColumnName: "col_dt" },
+      { id: "f_mood", name: "Mood", type: "formula", tableColumnName: "col_mood" },
+    ] as unknown as EidosFileFieldInfo[]
+    const rows = [
+      { col_dt: "2026-11-16 23:30:00", col_mood: 4 },
+      { col_dt: "2026-11-16T00:15:00", col_mood: 2 },
+      { col_dt: "2026-11-17 00:30:00", col_mood: 10 },
+    ] as unknown as EidosFileRow[]
+    const config: ChartConfig = {
+      type: "Line", group: "f_dt", value: "f_mood", aggregate: "Average",
+      date: "Day", sort: "Label", legend: false,
+    }
+    const result = aggregateRowsClientSide(rows, fields, config)
+    expect(result.items).toEqual([
+      { key: "2026-11-16", label: "2026-11-16", value: 3 },
+      { key: "2026-11-17", label: "2026-11-17", value: 10 },
+    ])
+  })
+
+  it("groups numeric epoch datetime values by UTC month", () => {
+    const fields = [
+      { id: "f_dt", name: "Date/Time", type: "datetime", tableColumnName: "col_dt" },
+    ] as unknown as EidosFileFieldInfo[]
+    const rows = [
+      { col_dt: Date.UTC(2026, 10, 30, 23, 0) },
+      { col_dt: Date.UTC(2026, 11, 1, 1, 0) },
+      { col_dt: Date.UTC(2026, 11, 20, 1, 0) },
+    ] as unknown as EidosFileRow[]
+    const config: ChartConfig = {
+      type: "Column", group: "f_dt", value: "", aggregate: "Count",
+      date: "Month", sort: "Label", legend: false,
+    }
+    const result = aggregateRowsClientSide(rows, fields, config)
+    expect(result.items.map((i) => [i.label, i.value])).toEqual([
+      ["2026-11", 1],
+      ["2026-12", 2],
+    ])
+  })
+
+  it("averages formula values read as bigint or numeric text (two Great = +2 on the same day)", () => {
+    const fields = [
+      { id: "f_dt", name: "Date/Time", type: "datetime", tableColumnName: "col_dt" },
+      { id: "f_mood", name: "Mood Number Values", type: "formula", tableColumnName: "col_mood", physicalName: null },
+    ] as unknown as EidosFileFieldInfo[]
+    const config: ChartConfig = {
+      type: "Line", group: "f_dt", value: "f_mood", aggregate: "Average",
+      date: "Day", sort: "Label", legend: false,
+    }
+    const variants: unknown[][] = [
+      ["2", "2"],
+      [2n, 2n],
+      [" 2.0 ", 2],
+    ]
+    for (const [a, b] of variants) {
+      const rows = [
+        { col_dt: "2026-11-17T18:17:00.000Z", col_mood: a },
+        { col_dt: "2026-11-17T03:00:00.000Z", col_mood: b },
+      ] as unknown as EidosFileRow[]
+      const result = aggregateRowsClientSide(rows, fields, config)
+      expect(result.items).toEqual([
+        { key: "2026-11-17", label: "2026-11-17", value: 2 },
+      ])
+    }
+  })
+
+  it("finds virtual field values keyed by field id when the column name is absent", () => {
+    const fields = [
+      { id: "f_dt", name: "Date/Time", type: "datetime", tableColumnName: "col_dt" },
+      { id: "f_mood", name: "Mood Number Values", type: "formula", tableColumnName: "col_mood" },
+    ] as unknown as EidosFileFieldInfo[]
+    const rows = [
+      { col_dt: "2026-11-17T18:17:00.000Z", f_mood: 2 },
+      { col_dt: "2026-11-17T03:00:00.000Z", f_mood: 2 },
+    ] as unknown as EidosFileRow[]
+    const config: ChartConfig = {
+      type: "Line", group: "f_dt", value: "f_mood", aggregate: "Average",
+      date: "Day", sort: "Label", legend: false,
+    }
+    expect(aggregateRowsClientSide(rows, fields, config).items[0]!.value).toBe(2)
+  })
+
+  it("fails loudly instead of returning 0 when the value field cannot be read", () => {
+    const fields = [
+      { id: "f_dt", name: "Date/Time", type: "datetime", tableColumnName: "col_dt" },
+      { id: "f_mood", name: "Mood Number Values", type: "formula", tableColumnName: "col_mood" },
+    ] as unknown as EidosFileFieldInfo[]
+    const config: ChartConfig = {
+      type: "Line", group: "f_dt", value: "f_mood", aggregate: "Average",
+      date: "Day", sort: "Label", legend: false,
+    }
+    const missing = [{ col_dt: "2026-11-17T18:17:00.000Z" }] as unknown as EidosFileRow[]
+    expect(() => aggregateRowsClientSide(missing, fields, config)).toThrow(/Mood Number Values/)
+    const text = [{ col_dt: "2026-11-17T18:17:00.000Z", col_mood: "Great" }] as unknown as EidosFileRow[]
+    expect(() => aggregateRowsClientSide(text, fields, config)).toThrow(/non-numeric values/)
+    const empty = [{ col_dt: "2026-11-17T18:17:00.000Z", col_mood: null }] as unknown as EidosFileRow[]
+    expect(aggregateRowsClientSide(empty, fields, config).items[0]!.value).toBe(0)
+  })
 })

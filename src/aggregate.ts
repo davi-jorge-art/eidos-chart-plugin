@@ -107,19 +107,103 @@ export function formatMetricNumber(value: number): string {
   })
 }
 
-function formatDateKey(raw: string, interval: ChartConfig["date"]): string {
-  if (interval === "Exact") return raw
-  const trimmed = raw.trim()
-  if (interval === "Year") {
-    return trimmed.slice(0, 4)
+/**
+ * Coerces a raw SQLite/host cell into a finite number. Row cells are
+ * `string | number | bigint | null | boolean`, and virtual Formula fields can
+ * surface integers as bigint or numbers as numeric text.
+ */
+export function toFiniteNumber(raw: unknown): number | undefined {
+  if (typeof raw === "number") return Number.isFinite(raw) ? raw : undefined
+  if (typeof raw === "bigint") {
+    const n = Number(raw)
+    return Number.isFinite(n) ? n : undefined
   }
-  if (interval === "Month") {
-    return trimmed.slice(0, 7)
+  if (typeof raw === "string") {
+    const text = raw.trim()
+    if (!text) return undefined
+    const n = Number(text.replace(",", "."))
+    return Number.isFinite(n) ? n : undefined
   }
-  if (interval === "Day") {
-    return trimmed.slice(0, 10)
+  return undefined
+}
+
+/** Error text for a value field whose cells cannot be read as numbers. */
+export function unreadableValuesMessage(
+  field: EidosFileFieldInfo,
+  probe: { keyed: boolean; sample: unknown }
+): string {
+  const why = probe.keyed
+    ? `found non-numeric values (example: ${typeof probe.sample} ${String(probe.sample)})`
+    : "the host did not return this field in the rows"
+  return `Could not read numeric values from "${field.name}" (${field.type} field): ${why}.`
+}
+
+/**
+ * Reads a cell from a row. Rows are keyed by `tableColumnName`; virtual fields
+ * (Formula, Lookup) may be keyed differently depending on the host, so fall
+ * back to the other identifiers the field exposes.
+ */
+export function readCell(
+  row: EidosFileRow,
+  field: EidosFileFieldInfo | undefined,
+  fallbackKey: string
+): unknown {
+  const keys = [
+    field?.tableColumnName,
+    field?.physicalName ?? undefined,
+    field?.id,
+    field?.name,
+    fallbackKey,
+  ]
+  for (const key of keys) {
+    if (key && Object.prototype.hasOwnProperty.call(row, key)) {
+      return (row as Record<string, unknown>)[key]
+    }
   }
-  return raw
+  return undefined
+}
+
+const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/
+const HAS_TIMEZONE = /(?:[zZ]|[+-]\d{2}(?::?\d{2})?)$/
+
+/**
+ * Converts a datetime value to a UTC ISO string. Strings without an explicit
+ * timezone (e.g. SQLite's "YYYY-MM-DD HH:MM:SS") are treated as UTC instead of
+ * the viewer's local time, so buckets do not depend on the browser timezone.
+ * Returns null when the value cannot be parsed.
+ */
+export function toUtcIso(value: string | number): string | null {
+  let timestamp: number
+  if (typeof value === "number") {
+    timestamp = value
+  } else {
+    let text = value.trim()
+    if (/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}/.test(text)) {
+      text = text.replace(" ", "T")
+      if (!HAS_TIMEZONE.test(text)) text += "Z"
+    }
+    timestamp = Date.parse(text)
+  }
+  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : null
+}
+
+function formatDateKey(raw: string | number, interval: ChartConfig["date"]): string {
+  if (interval === "Exact") return String(raw)
+
+  const text = String(raw).trim()
+  if (!text) return String(raw)
+
+  // Date-only values are already calendar dates. Datetime values are
+  // normalized to UTC before extracting the requested calendar interval.
+  const calendarValue =
+    typeof raw === "string" && DATE_ONLY.test(text)
+      ? text
+      : toUtcIso(raw) ?? text
+
+  if (interval === "Year") return calendarValue.slice(0, 4)
+  if (interval === "Month") return calendarValue.slice(0, 7)
+  if (interval === "Day") return calendarValue.slice(0, 10)
+  return String(raw)
 }
 
 /**
@@ -149,6 +233,28 @@ export function aggregateRowsClientSide(
     }
   }
 
+  const needsValues = config.aggregate !== "Count"
+  const probe = { rows: 0, keyed: false, raw: false, numeric: false, sample: undefined as unknown }
+  const readValue = (row: EidosFileRow): number | undefined => {
+    const raw = readCell(row, valueField, valueCol)
+    probe.rows++
+    if (raw !== undefined) probe.keyed = true
+    if (raw !== undefined && raw !== null && raw !== "") {
+      probe.raw = true
+      probe.sample ??= raw
+    }
+    const n = toFiniteNumber(raw)
+    if (n !== undefined) probe.numeric = true
+    return n
+  }
+  // Never turn "values could not be read" into a silent 0.
+  const assertValuesReadable = () => {
+    if (!needsValues || !valueField || probe.rows === 0 || probe.numeric) return
+    if (!probe.keyed || probe.raw) {
+      throw new Error(unreadableValuesMessage(valueField, probe))
+    }
+  }
+
   // Single metric across all rows
   if (!groupField) {
     let result = 0
@@ -157,11 +263,10 @@ export function aggregateRowsClientSide(
     } else {
       const numbers: number[] = []
       for (const row of rows) {
-        const raw = row[valueCol]
-        if (typeof raw === "number" && Number.isFinite(raw)) {
-          numbers.push(raw)
-        }
+        const n = readValue(row)
+        if (n !== undefined) numbers.push(n)
       }
+      assertValuesReadable()
       if (config.aggregate === "Sum") {
         result = numbers.reduce((a, b) => a + b, 0)
       } else if (config.aggregate === "Average") {
@@ -194,12 +299,8 @@ export function aggregateRowsClientSide(
     groupField.storageCodec === "relation"
 
   for (const row of rows) {
-    const rawGroupVal = row[groupCol]
-    const rawNumVal = row[valueCol]
-    const numeric =
-      typeof rawNumVal === "number" && Number.isFinite(rawNumVal)
-        ? rawNumVal
-        : undefined
+    const rawGroupVal = readCell(row, groupField, groupCol)
+    const numeric = needsValues ? readValue(row) : undefined
 
     let keys: unknown[] = []
     if (isList) {
@@ -223,7 +324,11 @@ export function aggregateRowsClientSide(
 
     for (const k of keys) {
       let bucketKey = k
-      if (typeof k === "string" && groupField.type === "date") {
+      if (
+        (typeof k === "string" ||
+          (typeof k === "number" && groupField.type === "datetime")) &&
+        (groupField.type === "date" || groupField.type === "datetime")
+      ) {
         bucketKey = formatDateKey(k, config.date)
       }
       const stringKey =
@@ -251,6 +356,8 @@ export function aggregateRowsClientSide(
       }
     }
   }
+
+  assertValuesReadable()
 
   const items: ChartDataItem[] = []
   for (const group of groups.values()) {
