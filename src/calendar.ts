@@ -77,8 +77,35 @@ export function scaleColor(
   baseColor: string,
   isDark: boolean
 ): string {
-  const t = max === min ? 0.7 : 0.15 + 0.85 * ((value - min) / (max - min))
-  return mix(neutralRgb(isDark), hexToRgb(baseColor), t)
+  return mix(neutralRgb(isDark), hexToRgb(baseColor), scaleIntensity(value, min, max))
+}
+
+/**
+ * How far along neutral -> base color a value is (0..1). The curve is
+ * quadratic: low and middle values stay light and only high values get a
+ * strong color, so a mid-high value (e.g. 0.67 on a -2..2 scale) is clearly
+ * different from the maximum. A linear mapping saturates too early to tell
+ * them apart.
+ */
+function scaleIntensity(value: number, min: number, max: number): number {
+  if (max === min) return 0.7
+  const fraction = Math.min(1, Math.max(0, (value - min) / (max - min)))
+  return 0.1 + 0.9 * fraction ** 2
+}
+
+/** CSS gradient for the legend bar, following the same curve as the cells. */
+export function scaleGradient(
+  min: number,
+  max: number,
+  baseColor: string,
+  isDark: boolean
+): string {
+  const stops = Array.from({ length: 9 }, (_, i) => {
+    const fraction = i / 8
+    const color = scaleColor(min + (max - min) * fraction, min, max, baseColor, isDark)
+    return `${color} ${fraction * 100}%`
+  })
+  return `linear-gradient(90deg, ${stops.join(", ")})`
 }
 
 const DATE = /^\d{4}-\d{2}-\d{2}$/

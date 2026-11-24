@@ -8,6 +8,7 @@ import {
   dayKeyForInstant,
   dayKeyOf,
   scaleColor,
+  scaleGradient,
 } from "./calendar"
 
 const f = (o: Record<string, unknown>) => o as unknown as EidosFileFieldInfo
@@ -276,6 +277,41 @@ describe("colored calendar", () => {
         min: -1,
         max: 1,
       })
+    })
+  })
+
+  describe("color curve", () => {
+    const blue = CALENDAR_COLORS.Blue
+    const red = (hex: string) => parseInt(hex.slice(1, 3), 16)
+    // Share of the way from the neutral color to the base color (red channel).
+    const share = (value: number) => {
+      const base = red(blue)
+      const light = 232 // neutral light gray used for empty/min tint
+      return (light - red(scaleColor(value, -2, 2, blue, false))) / (light - base)
+    }
+
+    it("keeps mid-high values clearly lighter than the maximum", () => {
+      expect(share(2)).toBeCloseTo(1, 2)
+      expect(share(2 / 3)).toBeGreaterThan(0.4)
+      expect(share(2 / 3)).toBeLessThan(0.6)
+      expect(share(0)).toBeLessThan(0.4)
+      expect(share(-1.5)).toBeLessThan(0.2)
+      // The gap between 0.67 and +2 is large (it was about a quarter before).
+      expect(share(2) - share(2 / 3)).toBeGreaterThan(0.4)
+    })
+
+    it("is monotonic and clamps values outside the range", () => {
+      const values = [-2, -1, 0, 1, 2].map(share)
+      expect([...values].sort((a, b) => a - b)).toEqual(values)
+      expect(scaleColor(9, -2, 2, blue, false)).toBe(scaleColor(2, -2, 2, blue, false))
+      expect(scaleColor(-9, -2, 2, blue, false)).toBe(scaleColor(-2, -2, 2, blue, false))
+    })
+
+    it("draws the legend with the same curve as the cells", () => {
+      const gradient = scaleGradient(-2, 2, blue, false)
+      expect(gradient).toContain(scaleColor(2, -2, 2, blue, false))
+      expect(gradient).toContain(scaleColor(0, -2, 2, blue, false))
+      expect(gradient.match(/%/g)).toHaveLength(9)
     })
   })
 })
